@@ -745,12 +745,13 @@ No further Stage A budget on the MinMax path.
 
 ---
 
-## Decision #15 — Stage A redesigned as a faithful conversion (proposed 2026-10-28)
+## Decision #15 — Stage A redesigned as a faithful conversion (2026-10-28)
 
-**Status:** proposed, awaiting Gaétan. Supersedes DEC-14's "LSQ next" and
-the Stage A gate of DEC-1 once accepted. Amended the same evening after a
+**Status:** accepted by Gaétan on 2026-10-28, as amended. Supersedes DEC-14's
+"LSQ next" and the Stage A gate of DEC-1. Amended before acceptance after a
 third review: points 3 and 6 corrected against the data, protocol,
-thresholds and a fallback for rung 2 added, rung 4 split in two.
+thresholds and a fallback for rung 2 added, rung 4 split in two. The numbers
+in the protocol and the ladder are now pre-registered.
 
 **Why.** Two independent reviews (Opus, Astra) and the day's experiments agree
 on the root cause: Stage A is not a conversion of the teacher but a
