@@ -46,6 +46,9 @@ class SpikingTernaryRWKVConfig:
     # MinMax FAI-LIF output: "int" (raw spike count, legacy) or "dequant"
     # (``scale * (q - zp)``, identity STE).
     act_output: str = "int"
+    # STE of the dequant output: "identity" (DEC-4: gradient 1 everywhere,
+    # clipped values included) or "clipped" (gradient 0 outside the grid).
+    act_ste: str = "identity"
     # beta = 0 on every FAI-LIF: no membrane carried across tokens.
     lif_stateless: bool = False
     # Bit-width of the FFN hidden FAI-LIF (relu² output); 0 = ``bits``.

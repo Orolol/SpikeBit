@@ -156,6 +156,7 @@ class StageAArgs:
     # "" / 0 / False keep the config's value.
     act_grid: str = ""
     act_output: str = ""
+    act_ste: str = ""
     lif_stateless: bool = False
     bits: int = 0
     bits_ffn_hidden: int = 0
@@ -329,7 +330,7 @@ def train(args: StageAArgs) -> int:
     if args.ffn_relu_sq:
         LOG.info("ffn_relu_sq: the channel-mix keeps the teacher's relu²")
         cfg.ffn_relu_sq = True
-    for name in ("act_grid", "act_output", "lif_stateless", "bits", "bits_ffn_hidden"):
+    for name in ("act_grid", "act_output", "act_ste", "lif_stateless", "bits", "bits_ffn_hidden"):
         value = getattr(args, name)
         if value:
             LOG.info("overriding %s: %s -> %s", name, getattr(cfg, name), value)

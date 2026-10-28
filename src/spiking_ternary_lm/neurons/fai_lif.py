@@ -59,16 +59,28 @@ def _ste_round_clip(x: Tensor, lo: float, hi: float) -> Tensor:
     return x + (target - x).detach()
 
 
-def _dequant_ste(spike: Tensor, scale: Tensor, zero_point: Tensor) -> Tensor:
+def _dequant_ste(
+    spike: Tensor, scale: Tensor, zero_point: Tensor, in_range: Tensor | None = None,
+) -> Tensor:
     """``scale * (spike - zero_point)`` whose gradient w.r.t. the membrane is 1.
 
     ``spike`` comes out of an identity STE (d spike / d v_pre = 1), so
     multiplying it by ``scale`` would give a gradient of ``scale`` instead of
     the straight-through 1 of the dequantized value. The value is taken
     detached and the zero-valued ``spike - spike.detach()`` carries the
-    gradient.
+    gradient. ``in_range`` (bool mask, optional) zeroes that gradient where
+    the membrane fell outside the grid (clipped STE).
     """
-    return (scale * (spike - zero_point)).detach() + (spike - spike.detach())
+    through = spike - spike.detach()
+    if in_range is not None:
+        through = through * in_range.to(through.dtype)
+    return (scale * (spike - zero_point)).detach() + through
+
+
+def _grid_mask(v_pre: Tensor, scale: Tensor, zero_point: Tensor, qmin: int, qmax: int) -> Tensor:
+    """True where ``round(v_pre / scale + zp)`` is not clipped to ``[qmin, qmax]``."""
+    u = v_pre.detach().float() / scale.float() + zero_point.float()
+    return (u >= qmin - 0.5) & (u <= qmax + 0.5)
 
 
 def _logit(p: float) -> float:
@@ -254,6 +266,9 @@ class FAILIF(nn.Module):
         # (``scale * (q - zp)`` with an identity STE w.r.t. the membrane;
         # DECISIONS #15). LSQ always outputs the dequantized value.
         self.output_mode = "int"
+        # Dequant output only: zero the STE gradient where the membrane is
+        # clipped by the grid (DEC-4's unmasked STE otherwise).
+        self.ste_clip = False
         # True ⇒ beta = 0: no membrane carried across tokens, the LIF is a
         # plain quantizer (DECISIONS #15 rungs 0-3).
         self.stateless = False
@@ -491,7 +506,11 @@ class FAILIF(nn.Module):
             return scale_dt * (spike - zp_dt)
         if self.output_mode == "dequant":
             self.last_spike = spike.detach()
-            return _dequant_ste(spike, scale_dt, zp_dt)
+            mask = (
+                _grid_mask(v_pre, scale, zero_point, self.observer.qmin, self.observer.qmax)
+                if self.ste_clip else None
+            )
+            return _dequant_ste(spike, scale_dt, zp_dt, mask)
         return spike
 
     # ----------------------------------------------------------------------
@@ -618,7 +637,11 @@ class FAILIF(nn.Module):
             if self.output_mode == "dequant":
                 # Each chunk has its own grid: dequantize with it.
                 int_chunks.append(spike_c.detach())
-                spike_c = _dequant_ste(spike_c, scale_f, zp_f)
+                mask = (
+                    _grid_mask(v_pre_c, scale_f, zp_f, self.observer.qmin, self.observer.qmax)
+                    if self.ste_clip else None
+                )
+                spike_c = _dequant_ste(spike_c, scale_f, zp_f, mask)
             spike_chunks.append(spike_c)
             # Keep v_curr in the autograd graph across chunks so BPTT
             # works through the whole sequence (caller detaches between
@@ -712,6 +735,16 @@ def set_output_mode(model: nn.Module, mode: str) -> int:
     for m in model.modules():
         if isinstance(m, FAILIF):
             m.output_mode = mode
+            n += 1
+    return n
+
+
+def set_ste_clip(model: nn.Module, flag: bool = True) -> int:
+    """Clipped STE on every :class:`FAILIF` (dequant output only)."""
+    n = 0
+    for m in model.modules():
+        if isinstance(m, FAILIF):
+            m.ste_clip = bool(flag)
             n += 1
     return n
 

@@ -36,6 +36,7 @@ from spiking_ternary_lm.neurons.fai_lif import (
     set_observer_scope,
     set_output_mode,
     set_stateless,
+    set_ste_clip,
 )
 from spiking_ternary_lm.quantization.bitlinear import set_weight_quant
 
@@ -80,6 +81,11 @@ class SpikingTernaryRWKV(nn.Module):
             raise ValueError(f"unknown act_quant {act_quant!r} (minmax | lsq | none)")
         if getattr(config, "act_output", "int") != "int":
             set_output_mode(self, config.act_output)
+        act_ste = getattr(config, "act_ste", "identity")
+        if act_ste == "clipped":
+            set_ste_clip(self)
+        elif act_ste != "identity":
+            raise ValueError(f"unknown act_ste {act_ste!r} (identity | clipped)")
         if getattr(config, "lif_stateless", False):
             set_stateless(self)
         weight_quant = getattr(config, "weight_quant", "ternary")

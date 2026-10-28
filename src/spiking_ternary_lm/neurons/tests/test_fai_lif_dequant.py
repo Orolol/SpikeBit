@@ -52,3 +52,21 @@ def test_lsq_input_gradient_is_straight_through(device):
     g_out = torch.randn(x_hat.shape, generator=g).to(device)
     (x_hat * g_out).sum().backward()
     assert torch.allclose(x.grad, g_out, atol=1e-6)
+
+
+@pytest.mark.parametrize("device", ["cpu", pytest.param("cuda", marks=CUDA)])
+@pytest.mark.parametrize("signed", [True, False])
+def test_clipped_ste_zeroes_gradient_outside_the_grid(device, signed):
+    lif = _lif(signed, device)
+    lif.ste_clip = True
+    # Grid [qmin * s, qmax * s]: [-8/7, 1] signed, [0, 1] unsigned.
+    x = torch.tensor([0.0, 0.3, -0.3, 0.9, 1.2, -1.2, 3.0, -3.0] * 2).view(1, 1, 16)
+    x = x.expand(2, 4, 16).contiguous().to(device).requires_grad_(True)
+    out = lif(x)
+    out.sum().backward()
+    scale = float(lif.observer.get_scale_and_zero_point()[0])
+    lo, hi = lif.observer.qmin * scale, lif.observer.qmax * scale
+    inside = (x.detach() >= lo - scale / 2) & (x.detach() <= hi + scale / 2)
+    assert 0 < int(inside.sum()) < inside.numel()
+    assert torch.equal(x.grad, inside.to(x.grad.dtype))
+    assert torch.equal(out.detach().clamp(lo, hi), out.detach())
