@@ -70,6 +70,10 @@ class StageAArgs:
     # Logging / checkpointing
     log_every: int = 50
     eval_every: int = 1000
+    # Cap on eval batches for the periodic in-training eval (the eval
+    # split is ~4.7 M tokens; a full pass costs minutes). 0 = full split.
+    # The final eval after training always uses the full split.
+    eval_max_batches: int = 200
     ckpt_every: int = 2000
     seed: int = 0
     device: str = "cuda"
@@ -353,7 +357,10 @@ def train(args: StageAArgs) -> int:
                 )
 
             if step > 0 and step % args.eval_every == 0:
-                eval_loss = evaluate(model, eval_loader, device, cfg.vocab_size)
+                eval_loss = evaluate(
+                    model, eval_loader, device, cfg.vocab_size,
+                    max_batches=args.eval_max_batches,
+                )
                 writer.log(step, eval_loss=eval_loss, eval_ppl=math.exp(eval_loss))
                 LOG.info("step %5d | eval loss %.4f (ppl %.1f)", step, eval_loss, math.exp(eval_loss))
 
@@ -378,12 +385,17 @@ def train(args: StageAArgs) -> int:
 
 
 @torch.no_grad()
-def evaluate(model: SpikingTernaryRWKV, loader: Iterable, device: torch.device, vocab_size: int) -> float:
+def evaluate(
+    model: SpikingTernaryRWKV, loader: Iterable, device: torch.device, vocab_size: int,
+    max_batches: int = 0,
+) -> float:
     model.eval()
     total = 0
     total_loss = 0.0
     model.detach_state()
-    for x, y in loader:
+    for i, (x, y) in enumerate(loader):
+        if max_batches > 0 and i >= max_batches:
+            break
         x = x.to(device); y = y.to(device)
         model.detach_state()
         logits = model(x)
