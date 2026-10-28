@@ -225,6 +225,10 @@ class FAILIF(nn.Module):
         # observer is refreshed and the kernel is invoked again. 0 ⇒
         # one call for the whole sequence (max staleness).
         self.seq_chunk_size = int(seq_chunk_size)
+        # When True the observer keeps its current running stats even in
+        # train mode (quantization grid frozen). Set by the trainer after a
+        # warm-up to rule out grid drift as a source of late instability.
+        self.observer_frozen = False
         # Calibration: if True, observer updates stats but the spike
         # output is meaningless (we still produce one for shape parity,
         # but don't reset the membrane potential). Set via
@@ -360,7 +364,8 @@ class FAILIF(nn.Module):
         v_pre = beta * self.v + x
 
         # Observer pass-through (stats update if in training mode).
-        self.observer(v_pre)
+        if not self.observer_frozen:
+            self.observer(v_pre)
 
         if self.calibrating:
             # Skip quantization & reset. Membrane is detached so we don't
@@ -471,7 +476,7 @@ class FAILIF(nn.Module):
             )
 
             # Per-step EMA updates for this chunk's timesteps.
-            if self.training:
+            if self.training and not self.observer_frozen:
                 v_pre_fp32 = v_pre_c.detach()
                 if v_pre_fp32.dtype != torch.float32:
                     v_pre_fp32 = v_pre_fp32.to(torch.float32)

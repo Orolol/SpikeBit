@@ -105,6 +105,9 @@ class StageAArgs:
     # state carried across sequences, reset once at the start). 1 = every
     # sequence is independent. Diagnostic for state-drift instabilities.
     reset_state_every: int = 0
+    # Freeze every FAI-LIF observer (quantization grid) from this optimizer
+    # step on. 0 = never (observers track activations for the whole run).
+    freeze_observers_at: int = 0
 
 
 def make_param_groups(model: SpikingTernaryRWKV, args: StageAArgs) -> list[dict]:
@@ -314,6 +317,13 @@ def train(args: StageAArgs) -> int:
         model.detach_state()  # bound BPTT memory between training windows
         if args.reset_state_every > 0 and micro % (args.reset_state_every * args.grad_accum) == 0:
             model.reset_state()
+        if args.freeze_observers_at > 0 and step == args.freeze_observers_at and micro % args.grad_accum == 0:
+            n_frozen = 0
+            for m in model.modules():
+                if isinstance(m, FAILIF) and not m.observer_frozen:
+                    m.observer_frozen = True
+                    n_frozen += 1
+            LOG.info("step %d: froze %d FAI-LIF observers", step, n_frozen)
         hook.enabled = step % args.log_every == 0
         # Autocast wraps ONLY the forward + loss. backward inherits the
         # dtype graph automatically and gradients accumulate into FP32
