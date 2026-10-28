@@ -83,3 +83,34 @@ straight-through gradient of 1 (the legacy integer path and the LSQ path
 both had it off by the step size s); the observers are calibrated on the
 global min/max of an FP pass over 8 training batches, then follow the usual
 EMA (momentum 0.01 per step).
+
+## Rung 1 — sweep results (2026-10-28, 17:53–18:16) and a protocol flaw
+
+Runs `runs/ladder/rung1_lr{LR}_s0` (64 × 32, state carried across contiguous
+rows), commits in each `pipeline.log` (`5da5fc8`…`9ed94ed`; the code changes
+in between do not touch the FP path). `uv run python scripts/ladder_summary.py`
+and `uv run python scripts/_diagnose_state_regime.py teacher rung1_lr…_s0`
+(`runs/ladder/rung1_warm_cold.txt`):
+
+| LR | train CE, steps 9 000–9 999 | PPL cold (protocol) | PPL warm (streaming) |
+|---|---|---|---|
+| zero-shot teacher | — | 13.98 | 15.41 |
+| 3e-5 | 1.729 | **8.86** | 5.83 |
+| 1e-4 | 1.630 | 9.49 | 5.41 |
+| 3e-4 | **1.578** | 10.68 | **5.11** |
+| 1e-3 | 1.616 | 9.60 | 5.23 |
+
+The pre-registered rule (lowest train CE) picks 3e-4, which has the *worst*
+protocol PPL: the ranking by train CE matches the warm eval and is reversed
+on the cold one. CE by position inside the 128-token window shows the cold
+penalty is not a cold-start transient: at positions 32–127 the fine-tuned
+models are 0.27–0.53 nats worse cold than warm (teacher: 2.45 cold vs 2.74
+warm, it was pre-trained from a fresh state). Training with the state carried
+across contiguous rows teaches the models to rely on a warm state, and the
+more so the higher the LR; the protocol then evaluates them from a cold one.
+DECISIONS #15 put both in the protocol without seeing that they conflict.
+
+The ladder is paused on this point (decision for Gaétan). As a diagnostic,
+not a replacement, the same sweep runs with stateless training matched to
+the eval: seq 128 × batch 16 (same 2 048 tokens per step), state reset every
+step (`--reset-state-every 1`), runs `runs/ladder/rung1c_lr{LR}_s0`.
