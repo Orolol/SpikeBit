@@ -42,6 +42,7 @@ def test_gradient_flows_through_ste():
 
 def test_state_carries_across_steps():
     """Membrane potential should accumulate when input is sub-spike."""
+    torch.manual_seed(0)  # the observer warm-up below is random; unseeded it failed ~50 %
     lif = FAILIF(num_neurons=2, num_bits=4, beta_init=0.95, gamma_init=1.0)
     lif.train()
     # Warm the observer with a broad distribution so the scale is not tiny.

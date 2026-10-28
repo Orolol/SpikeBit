@@ -266,19 +266,19 @@ def fai_lif_apply(
 
 # --- LSQ variant: learned step size (Esser et al., ICLR 2020) ------------
 #
-# Same fused forward as :class:`_FAILIFFunction`, but the quantization grid
-# is parametrised by a learnable per-tensor step ``s`` and offset ``off``
-# (``zp = -off / s``), and the backward adds their gradients. With the
-# integer spike ``q = round(clip(u))``, ``u = (v_pre - off) / s`` and the
+# Same fused forward as :class:`_FAILIFFunction`, but the grid is a pair of
+# learnable scalars: ``log_scale`` (``s = exp(log_scale)``, so Adam's step is
+# multiplicative -- activation ranges here move by x2-6 within a few hundred
+# steps and an additive step cannot follow) and ``zp`` in integer units. With
+# ``u = v_pre / s + zp`` and the integer spike ``q = round(clip(u))`` under the
 # identity STE through ``round``:
 #
-#     dq/ds   = -u / s   inside the clip range, 0 where clipped
-#     dq/doff = -1 / s   inside the clip range, 0 where clipped
+#     dq/dlog_scale = -(u - zp)   inside the clip range, 0 where clipped
+#     dq/dzp        =  1          inside the clip range, 0 where clipped
 #
 # Both are scaled by LSQ's ``g = 1 / sqrt(N * Q_P)`` (``N`` = elements in
-# the call) so the step-size update is commensurate with the weights'.
-# The reset term keeps DEC-4's detach, so ``v_pre``'s dependence on ``s``
-# through earlier resets is ignored, exactly as for ``x``.
+# the call). The reset keeps DEC-4's detach, so ``v_pre``'s dependence on the
+# grid through earlier resets is ignored, exactly as for ``x``.
 
 
 def _lsq_grad_scale(numel: int, qmin: int, qmax: int) -> float:
@@ -291,12 +291,11 @@ class _LSQFAILIFFunction(torch.autograd.Function):
     def forward(
         ctx: Any,
         x: Tensor, beta: Tensor, gamma: Tensor, v0: Tensor,
-        s: Tensor, off: Tensor, qmin: int, qmax: int,
+        log_scale: Tensor, zp: Tensor, qmin: int, qmax: int,
     ) -> tuple[Tensor, Tensor, Tensor]:
         ctx.set_materialize_grads(False)
-        s32 = s.detach().to(torch.float32).reshape(())
-        off32 = off.detach().to(torch.float32).reshape(())
-        zp32 = -off32 / s32
+        s32 = log_scale.detach().to(torch.float32).reshape(()).exp()
+        zp32 = zp.detach().to(torch.float32).reshape(())
         ext = _load_extension()
         use_cuda = ext is not None and x.is_cuda
         if use_cuda:
@@ -310,7 +309,7 @@ class _LSQFAILIFFunction(torch.autograd.Function):
                 x, beta, gamma, v0, s32, zp32, qmin, qmax
             )
             spike, v_pre, v_final = spike.detach(), v_pre.detach(), v_final.detach()
-        ctx.save_for_backward(x_c, beta_c, gamma_c, v0_c, s32, off32, v_pre)
+        ctx.save_for_backward(x_c, beta_c, gamma_c, v0_c, s32, zp32, v_pre)
         ctx._qmin = int(qmin)
         ctx._qmax = int(qmax)
         ctx._use_cuda = use_cuda
@@ -320,7 +319,7 @@ class _LSQFAILIFFunction(torch.autograd.Function):
     def backward(  # type: ignore[override]
         ctx: Any, gspike: Tensor, gv_pre: Tensor, gv_final: Tensor,
     ) -> tuple[Tensor | None, ...]:
-        x, beta, gamma, v0, s32, off32, v_pre = ctx.saved_tensors
+        x, beta, gamma, v0, s32, zp32, v_pre = ctx.saved_tensors
         B, T, H = x.shape
         qmin, qmax = ctx._qmin, ctx._qmax
         if gspike is None:
@@ -332,36 +331,35 @@ class _LSQFAILIFFunction(torch.autograd.Function):
         gv_final = gv_final.to(torch.float32).contiguous()
         gspike = gspike.to(torch.float32).contiguous()
 
-        # Step-size / offset gradients (host-side, a handful of fused ops).
-        u = (v_pre - off32) / s32
+        # Grid gradients (host-side, a handful of fused ops).
+        u = v_pre / s32 + zp32
         inside = ((u > qmin) & (u < qmax)).to(torch.float32)
         g = _lsq_grad_scale(u.numel(), qmin, qmax)
-        gs = (gspike * inside * (-u / s32)).sum() * g
-        goff = (gspike * inside * (-1.0 / s32)).sum() * g
+        gi = gspike * inside
+        glog = (gi * (zp32 - u)).sum() * g
+        gzp = gi.sum() * g
 
         if ctx._use_cuda:
             ext = _load_extension()
-            zp32 = -off32 / s32
             gx, gbeta, ggamma, gv0 = ext.backward(
                 x, beta, gamma, v0, s32, zp32, qmin, qmax, gspike, gv_final
             )
         else:
             gx, gbeta, ggamma, gv0, *_ = _backward_python(
-                x, beta, gamma, v0,
-                float(s32), float(-off32 / s32), qmin, qmax, gspike, gv_final,
+                x, beta, gamma, v0, float(s32), float(zp32), qmin, qmax, gspike, gv_final,
             )
-        return gx, gbeta, ggamma, gv0, gs.reshape(()), goff.reshape(()), None, None
+        return gx, gbeta, ggamma, gv0, glog.reshape(()), gzp.reshape(()), None, None
 
 
 def lsq_fai_lif_apply(
     x: Tensor, beta: Tensor, gamma: Tensor, v0: Tensor,
-    s: Tensor, off: Tensor, qmin: int, qmax: int,
+    log_scale: Tensor, zp: Tensor, qmin: int, qmax: int,
 ) -> tuple[Tensor, Tensor, Tensor]:
-    """Fused FAI-LIF sequence forward with LSQ-learnable ``(s, off)``.
+    """Fused FAI-LIF sequence forward with an LSQ-learnable grid.
 
-    ``s`` and ``off`` are 0-dim FP32 parameters (``zp = -off / s``). All other
-    inputs as :func:`fai_lif_apply`. Returns ``(spike_seq, v_pre_seq, v_final)``;
-    gradients flow to ``x``, ``beta``, ``gamma``, ``v0``, ``s`` and ``off``.
+    ``log_scale`` and ``zp`` are 0-dim FP32 parameters (``s = exp(log_scale)``,
+    ``q = round(clip(v_pre / s + zp))``). Other inputs as :func:`fai_lif_apply`.
+    Returns ``(spike_seq, v_pre_seq, v_final)``; gradients flow to ``x``,
+    ``beta``, ``gamma``, ``v0``, ``log_scale`` and ``zp``.
     """
-    return _LSQFAILIFFunction.apply(x, beta, gamma, v0, s, off, qmin, qmax)
-
+    return _LSQFAILIFFunction.apply(x, beta, gamma, v0, log_scale, zp, qmin, qmax)

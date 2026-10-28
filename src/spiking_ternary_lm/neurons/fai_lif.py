@@ -280,33 +280,32 @@ class FAILIF(nn.Module):
     def enable_lsq(self, init_steps: int = 1) -> None:
         """Switch this LIF to a learned step size (LSQ, Esser et al. 2020).
 
-        ``lsq_scale`` / ``lsq_offset`` are per-tensor parameters
-        (``zp = -offset / scale``). They are initialised from the MinMax
-        observer after ``init_steps`` training sequence-forwards (the
-        observer keeps tracking during that warm-up, then stops), so a
-        MinMax checkpoint can be loaded as-is. ``lsq_initialized`` is a
-        persistent buffer so a saved LSQ checkpoint does not re-init.
+        ``lsq_log_scale`` (``s = exp(.)``) and ``lsq_zp`` (integer units) are
+        per-tensor parameters. They are initialised from the MinMax observer
+        after ``init_steps`` training sequence-forwards (the observer keeps
+        tracking during that warm-up, then stops), so a MinMax checkpoint can
+        be loaded as-is. ``lsq_initialized`` is a persistent buffer so a saved
+        LSQ checkpoint does not re-init.
         """
         if self.act_quant == "lsq":
             return
         self.act_quant = "lsq"
         self.lsq_init_steps = int(init_steps)
-        self.lsq_scale = nn.Parameter(torch.tensor(1.0, dtype=torch.float32))
-        self.lsq_offset = nn.Parameter(torch.tensor(0.0, dtype=torch.float32))
+        self.lsq_log_scale = nn.Parameter(torch.tensor(0.0, dtype=torch.float32))
+        self.lsq_zp = nn.Parameter(torch.tensor(0.0, dtype=torch.float32))
         self.register_buffer("lsq_initialized", torch.tensor(0, dtype=torch.long))
         self.register_buffer("lsq_seen", torch.tensor(0, dtype=torch.long), persistent=False)
 
     def _lsq_init_from_observer(self) -> None:
         with torch.no_grad():
             scale, zp = self.observer.get_scale_and_zero_point()
-            self.lsq_scale.copy_(scale.to(torch.float32))
-            # zp = qmin - round(min / scale)  =>  offset = -zp * scale
-            self.lsq_offset.copy_((-zp * scale).to(torch.float32))
+            self.lsq_log_scale.copy_(scale.to(torch.float32).clamp(min=self.observer.eps).log())
+            self.lsq_zp.copy_(zp.to(torch.float32))
             self.lsq_initialized.fill_(1)
 
-    def _lsq_params(self) -> tuple[Tensor, Tensor]:
-        s = self.lsq_scale.clamp(min=self.observer.eps)
-        return s, self.lsq_offset
+    def lsq_scale_and_zero_point(self) -> tuple[Tensor, Tensor]:
+        """Current learned grid as ``(scale, zero_point)`` tensors (no grad)."""
+        return self.lsq_log_scale.detach().exp(), self.lsq_zp.detach()
 
     # ----------------------------------------------------------------------
     # Compatibility shims so the rest of the codebase can still use
@@ -417,8 +416,7 @@ class FAILIF(nn.Module):
             return v_pre.to(x.dtype)
 
         if self.act_quant == "lsq" and int(self.lsq_initialized) == 1:
-            s_, off_ = self._lsq_params()
-            scale, zero_point = s_.detach(), (-off_ / s_).detach()
+            scale, zero_point = self.lsq_scale_and_zero_point()
         else:
             scale, zero_point = self.observer.get_scale_and_zero_point()
         # Cast to x.dtype for the multiplication below.
@@ -490,13 +488,12 @@ class FAILIF(nn.Module):
                     if int(self.lsq_seen) >= self.lsq_init_steps:
                         self._lsq_init_from_observer()
                 return out
-            s_, off_ = self._lsq_params()
             spike_seq, _v_pre, v_final = lsq_fai_lif_apply(
                 x.to(torch.float32).contiguous(),
                 self.beta.to(torch.float32).contiguous(),
                 self.gamma.to(torch.float32).contiguous(),
                 self.v.to(torch.float32),
-                s_, off_, self.observer.qmin, self.observer.qmax,
+                self.lsq_log_scale, self.lsq_zp, self.observer.qmin, self.observer.qmax,
             )
             self.v = v_final.detach()
             return spike_seq.to(x.dtype)

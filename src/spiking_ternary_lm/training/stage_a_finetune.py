@@ -113,6 +113,10 @@ class StageAArgs:
     # LSQ model; the LSQ grids are initialised from the first batch).
     act_quant: str = ""
     lsq_init_steps: int = 1
+    # LR of the LSQ grid parameters (log-scale and zero-point). Adam's step is
+    # ~lr per step in log-scale units, i.e. ~1 % of scale per step at 1e-2:
+    # fast enough to track the x2-6 range drift seen in the MinMax runs.
+    lr_lsq: float = 1e-2
 
 
 def make_param_groups(model: SpikingTernaryRWKV, args: StageAArgs) -> list[dict]:
@@ -122,6 +126,7 @@ def make_param_groups(model: SpikingTernaryRWKV, args: StageAArgs) -> list[dict]
     rwkv_recurrent_params: list[nn.Parameter] = []
     embed_head_params: list[nn.Parameter] = []
     norm_params: list[nn.Parameter] = []
+    lsq_params: list[nn.Parameter] = []
 
     seen: set[int] = set()
     for name, p in model.named_parameters():
@@ -132,7 +137,9 @@ def make_param_groups(model: SpikingTernaryRWKV, args: StageAArgs) -> list[dict]
             embed_head_params.append(p)
         elif "shadow_weight" in name:
             bitlinear_params.append(p)
-        elif "beta_logit" in name or "gamma_logit" in name or "lsq_" in name:
+        elif "lsq_" in name:
+            lsq_params.append(p)
+        elif "beta_logit" in name or "gamma_logit" in name:
             lif_params.append(p)
         elif any(k in name for k in ("time_decay", "time_first", "mu_r", "mu_k", "mu_v")):
             rwkv_recurrent_params.append(p)
@@ -152,6 +159,8 @@ def make_param_groups(model: SpikingTernaryRWKV, args: StageAArgs) -> list[dict]
         {"params": rwkv_recurrent_params, "lr": args.lr_rwkv, "name": "rwkv_recurrent"},
         {"params": norm_params, "lr": args.lr_bitlinear, "name": "norm"},
     ]
+    if lsq_params:
+        groups.append({"params": lsq_params, "lr": args.lr_lsq, "name": "lsq"})
     if args.lr_embed_head > 0.0:
         groups.append({"params": embed_head_params, "lr": args.lr_embed_head, "name": "embed_head"})
     return groups
