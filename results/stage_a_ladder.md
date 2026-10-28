@@ -165,3 +165,64 @@ config says `weight_quant="ternary"`, all 84 BitLinear have `quantize=True`,
 each group has a single non-zero magnitude (ternary, 31.7 % zeros), the
 forward equals `x @ quantized_weight().T`, and the protocol PPL is 5.222 with
 the ternary weights vs 38.7 with the FP shadow weights swapped in.
+
+**Grid extension and closure.** 1e-2 (`rung2c_lr1e-2_s0`): train CE 1.696,
+PPL 5.425, worse than 3e-3, so the selected LR stays **3e-3** and the seed-1
+run above counts. **Rung 2 = 5.157** (mean of 5.222 and 5.093), seed spread
+2.5 %, noise rule at its 5 % floor. Ratio to rung 1: **1.03**, under 1.5:
+continue, no plan B.
+
+## Rung 3 — results with the pre-registered quantizer (2026-10-28, 19:54–21:14)
+
+Runs `runs/ladder/rung3c_{a8,a4,a4h8}_s{0,1}`, the pre-registered config at
+LR 3e-3 (commit `61aa574`), KL to rung 1 seed 0.
+
+| config | PPL seed 0 | PPL seed 1 | ratio to rung 2 (5.157) | threshold |
+|---|---|---|---|---|
+| 8-bit | **679.9** (diverged) | 5.982 | 131.8 / 1.16 | ≤ 1.1 |
+| 4-bit | 10.118 | 9.385 | 1.89 (mean) | ≤ 1.3 |
+| 4-bit, relu² output 8-bit | 10.456 | 10.556 | 2.04 (mean) | ≤ 1.3 |
+
+Taken at face value every configuration fails, including 8-bit on its
+healthy seed. The 8-bit seed-0 divergence is a result to explain before any
+verdict (suspicious-result rule): 8 bits should be close to lossless.
+
+**What happened.** Total grad norm, logged every 50 steps (pre-clip; the
+clip at 1 bounds the step, not the direction): rung 2 has a median of 0.41
+and a maximum of 26 (step 0). `rung3c_a8_s0` has 99 of 200 samples above 10,
+the first at step 550, a maximum of 2.7e8, and its loss never recovers after
+step 5 800. `rung3c_a4h8_s1` reaches 1.3e7 and recovers. The healthy
+`rung3c_a8_s1` stays at a median of 0.56.
+
+`scripts/_diagnose_act_scale.py` on the final checkpoints (first 16 windows
+of the eval tail, train mode) shows an activation-scale runaway in the
+channel-mix under activation quantization, on *every* rung-3 run checked,
+healthy seed included (absmax over the batch):
+
+| block 0 channel-mix | rung 1 | rung 2 | rung 3, 8-bit s1 | rung 3, 8-bit s0 |
+|---|---|---|---|---|
+| `W_k` output (pre-relu²) | 6.75 | 8.19 | 724 | 310 |
+| relu² output (`lif_k` in) | 24.7 | 65 | 3.4e4 | 1.5e4 |
+| `W_v` output | 135 | 222 | 9.5e6 | 4.0e6 |
+
+In block 11 the `W_v` output reaches 6.4e3 at rung 2 and 1.3e9 / 2.1e9 at
+rung 3. The time-mix stays within a few × of rung 2. The residual stream
+grows with it; the final LayerNorm hides it in the forward, but the
+backward profile across blocks is no longer smooth (diverged run: residual
+grad 1.9e-7 at block 11, 9.1e2 at block 0).
+
+**Hypothesis.** The FAI-LIF STE is the identity outside the grid as well
+(DECISIONS #4: "we do *not* mask the gradient outside [0, 2^A − 1] … If
+saturation becomes a problem in Phase 3, revisit"). With β = 0 the clipped
+excess is lost rather than carried by the membrane. A clipped output is
+smaller than its input; the loss pushes it up; the identity STE hands that
+push to the pre-activation, whose output cannot move; the pre-activation
+grows, the EMA max follows, the grid widens, and relu² squares the growth.
+Saturated elements are few (1e-5 to 3e-3 per LIF at qmax) but they are the
+largest ones, where relu²'s backward (2z) is largest.
+
+**Diagnostic in progress.** The same six runs with
+`--act-ste clipped` (gradient 0 where the membrane is outside the grid, commit
+`0bcd51c`), same LR and seeds: runs `runs/ladder/rung3m_*`. This changes the
+quantizer of the pre-registered rung 3, so its results count only if
+Gaétan accepts the change (proposed DECISIONS #17).
