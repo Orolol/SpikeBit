@@ -903,3 +903,50 @@ same sweep gives protocol PPL 5.0–6.3 with the same ranking as the train CE.
 **Alternative not chosen.** Keep the stateful training and make the eval
 streaming: consistent too, but it changes the primary metric after results
 and the teacher reference (zero-shot 13.98 cold, 15.41 warm).
+
+---
+
+## Decision #17 — Clipped STE for the dequantized FAI-LIF output (2026-10-28)
+
+**Status:** proposed (awaiting Gaétan). Amends DEC-4 (STE outside the grid)
+for the dequantized, stateless FAI-LIF of DEC-15 rungs 3–4a. Decided after
+the rung-3 results; the reasons are the mechanism and the divergence, not
+the PPL.
+
+**Why.** Rung 3 with the pre-registered quantizer
+(`results/stage_a_ladder.md`): 8-bit seed 0 diverged (PPL 680, grad norm up
+to 2.7e8), 8-bit seed 1 reached 1.16 × rung 2, 4-bit 1.89 ×, 4-bit with an
+8-bit relu² output 2.04 ×. On both 8-bit checkpoints the channel-mix
+activations ran away during training (block 0: relu² output absmax 65 at
+rung 2 vs 1.5e4–3.4e4; `W_v` output 222 vs 4e6–1e7; block 11 `W_v` output
+6.4e3 vs 1.3e9–2.1e9). DEC-4 lets the gradient through clipped neurons ("If
+saturation becomes a problem in Phase 3, revisit"); its rationale was
+recovery of saturated units. With β = 0 the clipped excess is discarded, so
+the STE tells the pre-activation to grow when the output cannot. The
+pre-activation grows, the MinMax grid follows it, and relu² squares the
+growth.
+
+**Evidence so far.** `rung3m_a8_s0` (the diverged config and seed, same LR
+3e-3, `--act-ste clipped`): PPL 5.237 = 1.015 × rung 2. Its grad-norm profile
+is the same as rung 2's: median 0.40, maximum 26, at step 0 only. The other
+five clipped-STE runs are in `runs/ladder/rung3m_*`.
+
+**Proposal.**
+
+  1. The dequantized FAI-LIF output uses the clipped STE: gradient 1 where
+     `round(v/s + zp)` falls inside `[qmin, qmax]`, 0 where it is clipped
+     (`act_ste="clipped"`). The legacy integer output keeps DEC-4's
+     unmasked STE (`act_ste="identity"`, default, so old runs reproduce).
+  2. Rung 3 is the six `rung3m_*` runs: the pre-registered configs (8-bit,
+     4-bit, 4-bit with an 8-bit relu² output), LR 3e-3 (the rung-2 LR), seeds
+     0 and 1, thresholds unchanged (8-bit ≤ 1.1, 4-bit ≤ 1.3 × rung 2). As
+     with DEC-16, the runs started before sign-off count if this is
+     accepted. The `rung3c_*` runs stay as the record of the failure.
+  3. Rung 4b (β > 0, membrane clamped to ±s/2): the excess beyond the clamp
+     is discarded too, so the clipped STE is kept there; any other choice
+     is a separate decision.
+
+**Alternative not chosen.** Keep DEC-4's STE and lower the LR or add
+activation clipping or a scale penalty: these would treat the symptom, and
+the runaway appears at the pre-registered LR on both seeds, the healthy one
+included.
