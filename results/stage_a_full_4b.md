@@ -104,4 +104,23 @@ Facts established:
 
 **Results (attempt 3).** aborted at step 5650 (see table above).
 
-**Reproduction of May (`runs/stage_a_repro_may_1500`, 1 500-step schedule, full-tail evals).** _pending_
+**Reference run — `runs/stage_a_repro_may_1500` (closed 2026-10-28 16:35).**
+Commit `65a3ae5` (+ results notes), seed 0, init `stage_a_init_phase35.pt`, 64×8,
+1 500 steps, warmup 150, LRs ×3 (bitlinear 3e-4, lif 1.5e-4, rwkv 3e-5,
+embed/head 3e-4), bf16 autocast, `--lif-seq-chunk 8`, full-tail periodic evals:
+
+| step | train loss | eval PPL (full tail, seq 64) |
+|---|---|---|
+| 500 | 6.75 | 755.6 |
+| 1000 | 5.91 | 390.1 |
+| 1500 (final) | 5.51 (step 1400) | **309.2** |
+
+Pre-registered metric (`scripts/evaluate.py`, seq 128, 20 224 tokens): **PPL 394.9**
+(loss 5.979). Teacher on the same tail: 13.34. Gate (≤ 14.0): **not met**, by ~30×.
+May's `stage_a_midrun_fast_fp32` reported 184 at the same step with an
+unrecorded config; the shape of the loss curve is reproduced (same bumps), the
+level is not (×1.5–2). Chapter closed: May's numbers are not a usable reference;
+this run is. Checkpoint: `checkpoints/stage_a_repro_may_1500/final.pt`.
+
+**Next (DECISIONS #14):** replace the moving-average MinMax observer by a
+learned step size (LSQ) before any further Stage A budget.

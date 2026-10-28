@@ -689,3 +689,54 @@ to bound the final-eval split).**
 **Test status.** ``uv run pytest src/spiking_ternary_lm/`` → 105 passed.
 
 **Smoke logs.** ``/tmp/mp_fp32.log`` and ``/tmp/mp_bf16.log``.
+
+
+---
+
+## Decision #14 — Stage A resumed: reference run, long-run instability, LSQ next (2026-10-28)
+
+**Status:** accepted. Supersedes the implicit assumption in DEC-11 that longer
+Stage A runs would "clear the 95 % target with margin".
+
+**Context.** Project resumed after five months, git-initialised, kernels made
+portable (arch auto-detect), training step de-bottlenecked (observer EMA
+closed form, on-device scale/zp, no host syncs: 197 → 46 ms whole-seq,
+426 → 154 ms chunk-8 at 64×8 on the 5090). Teacher PPL measured for the first
+time on the eval tail: **13.34**. Full log of the day in
+`results/stage_a_full_4b.md`.
+
+**Findings.**
+
+  1. **The May runs are not a usable reference.** Their launch config (LRs,
+     warmup) was never recorded and the code changed between them and the
+     final May-21 state. At the spec LRs the student descends 3× slower than
+     May; LRs ×3 reproduce the *shape* of May's loss curve (same data order,
+     same bumps) but not its level (PPL 309 vs 184 at 1 500 steps, full tail).
+     The quantized model is also noisy run-to-run (±30 % PPL between
+     consecutive evals). Chapter closed; `runs/stage_a_repro_may_1500` is
+     the reference from now on (commit, command, seed in `results/`).
+  2. **Every run past ~1.5 k steps diverges** at a LR that learns at all
+     (train loss 5.9 → 7.4 between steps 1 700 and 2 000). Parameters move
+     modestly; the recurrent state is not the cause (per-batch reset in eval
+     costs 10 %); freezing the observers makes it diverge *faster*; the
+     observer ranges of the early blocks grow ×2.5–6 between steps 1 000
+     and 2 000 (block-0 channel-mix `lif_v` reaches its theoretical max).
+     Per-tensor MinMax tracking follows the extremes of a few neurons and
+     coarsens the grid for all the others. This is DEC-7's fragility
+     materialising at long horizon.
+  3. Batch size is free up to 32 at this scale (launch-bound, 0.17 s/step,
+     12 GB) but did not help: 64×32 runs plateau at PPL 370–520.
+  4. Head/embedding LR is the lever for the early descent (DEC-9 mechanism);
+     it does not fix the long-run plateau.
+
+**Decision.** Implement **LSQ** (Esser et al. 2020, learned step size with
+the LSQ gradient scaling `1/sqrt(N·Q_P)`) as the activation quantizer of
+FAI-LIF, initialised from the observer's first-batch range, per-tensor, with
+the step size trained in the LIF parameter group. Keep the MinMax observer as
+the `--act-quant minmax` baseline for the A/B. Gate for the LSQ variant:
+a 1 500-step run at the reference config must beat PPL 309 on the full tail
+*and* a 5 k-step run must not diverge (eval PPL monotone within noise).
+No further Stage A budget on the MinMax path.
+
+**New trainer flags** (all default-off): `--lif-seq-chunk`,
+`--eval-max-batches`, `--reset-state-every`, `--freeze-observers-at`.

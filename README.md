@@ -20,9 +20,14 @@ Two-stage validation plan:
 
 All design decisions live in `DECISIONS.md` (numbered, immutable entries).
 
-## Status (snapshot, 2026-10-28)
+## Status (snapshot, 2026-10-28, evening)
 
-Built in an autonomous three-day session (2026-05-19 → 21), then paused.
+Built in an autonomous three-day session (2026-05-19 → 21), paused, resumed
+2026-10-28. See DECISIONS #14 and `results/stage_a_full_4b.md` for the resume
+day: teacher PPL = 13.34; reference Stage A run `stage_a_repro_may_1500`
+(PPL 309 full tail / 395 on the evaluate.py metric at 1 500 steps); every
+longer run diverges because the per-tensor MinMax observers lose track of the
+activation ranges. Next step: LSQ activation quantizer.
 
 **Done.** Phases 0–4: neurons (FAI-LIF with moving-average MinMax
 observer, binary LIF, surrogates), ternary STE + `BitLinear`, spiking
