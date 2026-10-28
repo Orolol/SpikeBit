@@ -40,3 +40,46 @@ Relative PPL difference 4.9e-9; max |Δlogit| on the first 4 batches 8.0e-5
 
 The teacher reference on the DECISIONS #15 protocol is therefore **13.98**
 (the earlier 13.34 was on the first 20 k tokens of the tail only).
+
+## Rung 1 — reference: the rung-0 student in FP, fine-tuned
+
+**Config** (protocol of DECISIONS #15): `--teacher-id RWKV/rwkv-4-169m-pile
+--weight-quant none --act-quant none --ffn-relu-sq --contiguous-rows
+--protocol-eval`, 64 × 32, 10 k steps (20.5 M tokens), warmup 300, cosine to
+0.1, AdamW without weight decay, grad clip 1, bf16 autocast over FP32 master
+weights, CE only. (A first launch of the sweep forgot `--weight-quant none`,
+i.e. trained ternary weights; it was killed within the first minutes and its
+outputs deleted.)
+
+**LR selection, written before the runs.** DECISIONS #15 does not fix the LR.
+One uniform LR for every trained group (projections, norms, time parameters,
+embedding and head), swept over {3e-5, 1e-4, 3e-4, 1e-3} at seed 0 and full
+length. Criterion: mean train CE over steps 9 000–9 999, i.e. progressive
+validation on text the run has not seen yet; the eval tail is not used for the
+choice. The best LR is rerun at seed 1; its seed-0 sweep run is rung 1 seed 0.
+
+## Rung 2 — ternary weights, FP activations (pre-registered before rung 1 results)
+
+Config: rung-1 switches with `--weight-quant ternary`, plus
+`--distill-checkpoint <rung 1 seed 0 final.pt>` (KL weight 1, T = 1). Same
+LR rule as rung 1, grid {1e-4, 3e-4, 1e-3, 3e-3}, selection on the train CE
+(the logged `loss`, without the KL) over steps 9 000–9 999 at seed 0, rerun
+at seed 1. Thresholds of DECISIONS #15 on the protocol PPL ratio to rung 1
+(mean of its two seeds): ≤ 1.5 continue; 1.5–2 continue and run plan B (a)
+(`--ternary-ramp-frac 0.3`) in parallel; > 2 plan B before rung 3.
+
+## Rung 3 — activations on top of rung 2 (pre-registered)
+
+Config: rung-2 config and LR, plus `--act-quant minmax --act-grid faithful
+--act-output dequant --lif-stateless --calibrate-batches 8`, at `--bits 8`,
+then `--bits 4`, then the pre-registered variant `--bits 4
+--bits-ffn-hidden 8`. Faithful grids: zp = 0, signed symmetric for time-mix
+k, v and the gated wkv and for the FFN output, unsigned after relu². The
+receptance stays FP (`spiking_r=False`, DEC-8), as in every run since May.
+Thresholds (ratio to rung 2): 8-bit ≤ 1.1, 4-bit ≤ 1.3.
+
+Implementation notes fixed before these runs: the dequantized output uses a
+straight-through gradient of 1 (the legacy integer path and the LSQ path
+both had it off by the step size s); the observers are calibrated on the
+global min/max of an FP pass over 8 training batches, then follow the usual
+EMA (momentum 0.01 per step).
