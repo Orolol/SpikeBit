@@ -55,8 +55,9 @@ the in-training eval shares state with training, and the teacher reference
 is not fine-tuned on TinyStories. BF16 shadow weights break vanilla AdamW;
 use FP32 master + autocast (DECISIONS #12, #13).
 
-**Next steps:** DECISIONS #15 (faithful-conversion ladder with a fine-tuned
-teacher reference, stateless-LIF ablation, KL distillation).
+**Next steps:** DECISIONS #15 (proposed): rebuild Stage A as a faithful
+conversion ladder with a fine-tuned teacher reference, folded quantization
+grids, stateless-LIF ablation and KL distillation. Awaiting sign-off.
 
 ## Setup
 

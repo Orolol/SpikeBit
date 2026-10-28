@@ -124,3 +124,23 @@ this run is. Checkpoint: `checkpoints/stage_a_repro_may_1500/final.pt`.
 
 **Next (DECISIONS #14):** replace the moving-average MinMax observer by a
 learned step size (LSQ) before any further Stage A budget.
+
+## Quantizer variants (2026-10-28, 17:00–17:25), all at the reference config
+
+| run (`runs/`) | change | train loss @100 / @300 | outcome |
+|---|---|---|---|
+| `stage_a_lsq_1500/attempt1_additive` | LSQ, additive step `s`, int output | 23 / 32 | grids could not follow the ×2–6 range drift; saturated |
+| `stage_a_lsq_1500/attempt2_logscale_intout` | LSQ, `s = exp(θ)`, int output | 20 / 18.5 | saturation self-perpetuating: clipped elements give no gradient to `s` when the output is the raw integer |
+| `stage_a_lsq_1500` (attempt 3) | LSQ, dequantized output `s(q − zp)` | 71 / 71 | membrane (×10 leak gain, two LIFs in series) explodes downstream; inf grads, frozen |
+| `stage_a_chan_1500/attempt1_m001` | per-channel MinMax, m = 0.01 | 28 / 35.5 | never learns |
+| `stage_a_chan_1500` (m = 0.001) | per-channel MinMax, slower EMA | 28 / 35.5 | idem |
+| `stage_a_fixreset_tensor_1500` | **reset fixed** `s(q − zp)`, per-tensor | 14.8 / 6.8 | PPL **415** full tail / 555 evaluate.py (reference 309 / 395: within the run-to-run noise band) |
+| `stage_a_fixreset_chan_1500` | reset fixed, per-channel | 29 / 34 | plateau at loss ~31; PPL 1e23 |
+
+Reading (confirmed by the two external reviews): with the raw integer output,
+every grid (scale, zero-point) that differs per channel or moves during
+training is an affine distortion the next BitLinear must unlearn, and the
+teacher's function is already lost at step 0 (loss 45–53 > uniform 10.8).
+Changing the quantizer treats the symptom. The reset bug (`s·q` instead of
+`s·(q − zp)`) was real and is fixed, but it was not what limited the
+per-tensor runs.

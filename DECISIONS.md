@@ -742,3 +742,69 @@ No further Stage A budget on the MinMax path.
 
 **New trainer flags** (all default-off): `--lif-seq-chunk`,
 `--eval-max-batches`, `--reset-state-every`, `--freeze-observers-at`.
+
+---
+
+## Decision #15 — Stage A redesigned as a faithful conversion (proposed 2026-10-28)
+
+**Status:** proposed, awaiting Gaétan. Supersedes DEC-14's "LSQ next" and
+the Stage A gate of DEC-1 once accepted.
+
+**Why.** Two independent reviews (Opus, Astra) and the day's experiments agree
+on the root cause: Stage A is not a conversion of the teacher but a
+re-training of a different network from a scrambled init.
+
+  1. The converted student starts at loss 45–53, worse than uniform (10.8):
+     FAI-LIF emits raw integers, the grid's scale and zero-point are never
+     folded into the next BitLinear, so the teacher's function is lost before
+     the first step and every observer update changes the next layer's gain.
+  2. The RWKV-4 channel-mix `relu²` is dropped (replaced by a near-affine
+     quantizer; channel-mix `lif_k` fires at 0.55 with 0 % dead where the
+     teacher zeroes about half), and `lif_out` is unsigned on a signed value.
+  3. With T = 1 the LIF is a quantizer plus a per-channel error-feedback
+     recurrence (leak β) the teacher does not have; its membrane carries a
+     ×1/(1−β) gain, which is why the dequantized-output LSQ attempt exploded.
+  4. The reference is miscalibrated: teacher not fine-tuned on TinyStories,
+     no KL distillation, and "≥ 95 % of teacher PPL" is unrealistic for
+     ternary weights at 169 M / 20 M tokens.
+  5. Protocol gaps (Astra): teacher evaluated stateless per window while the
+     student carries state; batch rows did not continue (DEC-2 streaming was
+     not implemented); eval shared state with training. All three fixed in
+     the trainer on 2026-10-28 (`--contiguous-rows`, stateless eval), none
+     measured yet.
+  6. A real bug: the soft reset subtracted `s·q` instead of `s·(q − zp)`,
+     leaving a `s·zp` membrane offset per step. Fixed (CUDA fwd/bwd, Python,
+     per-step path) with an invariant test; at per-tensor scope it did not
+     change the 1 500-step PPL beyond noise (415 vs 309).
+
+Quantizer variants tried on top of the current design all failed (see
+`results/stage_a_full_4b.md`): LSQ with integer output cannot learn out of
+saturation, LSQ with dequantized output blows up through the leak gain,
+per-channel grids are an affine distortion the teacher's downstream weights
+cannot absorb (and are not foldable into ternary weights anyway).
+
+**Decision (proposed).** Rebuild Stage A as a measured ladder, each rung on
+the same eval (full tail, stateless per window, contiguous rows), each with
+its pre-registered threshold before launch:
+
+  0. Teacher fine-tuned on TinyStories with the same budget → the reference.
+  1. Student with *no* quantization must reproduce rung 0: fold scale and
+     zero-point into the next BitLinear (per-tensor scalar → group scales,
+     zp → bias), keep `relu²` before an unsigned LIF, signed `lif_out`,
+     stateless LIF (β = 0). Gate: PPL within noise of rung 0.
+  2. Ternary weights only (activations FP).
+  3. 8-bit, then 4-bit activations (MinMax per-tensor as the baseline).
+  4. Only now: β > 0 (the spiking reading) as an ablation against rung 3,
+     plus an energy proxy (spike count × add cost vs MACs), since the
+     hardware argument is otherwise unsupported.
+  5. KL distillation from the teacher's logits as the training loss at
+     every rung ≥ 2; LSQ vs MinMax compared only at rung 3, same output
+     convention.
+
+Everything below rung 1 is diagnostics-only until rung 1 passes. No further
+Stage A budget on the current design.
+
+**Positioning note.** 4-bit activations with ternary weights exist (BitNet
+a4.8); SpikeBit's contribution has to be the spiking/recurrent reading (rung
+4) or the hardware path. If rung 4 shows no gain over rung 3, the project's
+claim should be revised, not the metric.
