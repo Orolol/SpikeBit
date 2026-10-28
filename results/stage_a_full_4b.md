@@ -74,4 +74,34 @@ Batch size (head LR 1e-3, 0 / 100 / 200): 64×8 53.6 / 7.7 / 6.5; 64×16 53.8 / 
 64×32 52.9 / 7.3 / 6.45. Step time is launch-bound and identical (0.17 s) up to
 batch 32 (GPU 88 %, peak 11.6 GB), so attempt 3 uses 64×32 (20 M tokens over 10 k steps).
 
-**Results (attempt 3).** _pending_
+
+## Long-run instability (2026-10-28, afternoon)
+
+Every run past ~1.5 k steps at a LR that reproduces the May descent diverges:
+
+| run (`runs/`) | config | train loss 1000 → 2000 | eval PPL (200-batch subset) |
+|---|---|---|---|
+| `stage_a_full_4b/attempt3_h1e3` | 64×32, head 1e-3, rest spec | 6.0 → 6.2 (plateau 370–520 PPL to step 5650) | 371–517 |
+| `stage_a_full_4b_h3e4` | 64×32, head 3e-4 | 6.9 at 1000, rising | 1038 at 1000 |
+| `stage_a_full_4b_lrx3_b8` | 64×8, all LRs ×3 (May-like) | 5.9 → 7.4 | 448 → 1386 |
+| `stage_a_full_4b_lrx3_b8_reset1` | + state reset every step | stuck at ~40 from step 50 | — |
+| `stage_a_full_4b_lrx3_b8_frz1k` | + observers frozen at 1000 | 5.9 → 8.7 at 1500 | 6355 at 1500 |
+
+Facts established:
+- The May-like run tracks `stage_a_midrun_fast_fp32` step by step (same loss
+  bumps at 1100/1300: same data order) with a ~0.5-nat offset consistent with
+  May's cosine already decaying (1 500-step schedule).
+- Parameters move modestly by step 2000 (ternary distribution unchanged;
+  |Δ| shadow 5 % rel.; LN weights up to 0.45 abs.); grads flow to every group.
+- In eval mode (grids frozen) resetting the recurrent state per batch costs
+  ~10 % PPL (413 → 459): the model does not depend on carried state.
+- In train mode, resetting state per step stalls training (observer EMA sees
+  cold-start membranes); freezing the observers makes it diverge faster.
+  ⇒ the activation statistics are non-stationary under training and the
+  observers' tracking is what keeps it alive; the divergence at ~2 k steps is
+  the tracking losing the race, not a kernel bug (WKV grads verified with a
+  fresh state).
+
+**Results (attempt 3).** aborted at step 5650 (see table above).
+
+**Reproduction of May (`runs/stage_a_repro_may_1500`, 1 500-step schedule, full-tail evals).** _pending_
