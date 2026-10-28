@@ -38,40 +38,25 @@ recurrence and for FAI-LIF (`layers/csrc`, `neurons/csrc`) make training
 5090, i.e. ~22 min for 10 k steps). Stage C and the Phase 6 ablations are
 code only, never run.
 
-**Results so far** (all runs ≈ 1 500 steps, not the planned 10 k; curves
-were still descending). Held-out TinyStories perplexity:
+**Results.** The May runs are not a usable reference (DECISIONS #14: unrecorded
+config, code changed since, ±30 % eval noise). Reference run on 2026-10-28:
+`runs/stage_a_repro_may_1500` → PPL 309 (full tail, 1 500 steps) / 394.9 on the
+`scripts/evaluate.py` metric, teacher 13.34 on the same tail. Full log and the
+A/B tables in `results/stage_a_full_4b.md`. The quantisation stack, not the
+budget, is the limiter; the per-tensor MinMax observers lose track of the
+activation ranges past ~1.5 k steps.
 
-| run (`runs/`)                    | activations | path                      | PPL   |
-|----------------------------------|-------------|---------------------------|-------|
-| `stage_a_fp_baseline` (quant off) | FP          | python                    | 37.8  |
-| `stage_a_a8`                     | 8-bit       | python                    | 100.8 |
-| `stage_a_midrun_perstep_obs`     | 4-bit       | kernel, per-step scale    | 154.9 |
-| `stage_a_midrun_m047`            | 4-bit       | kernel, whole-seq scale   | 176.2 |
-| `stage_a_midrun_obs`             | 4-bit       | python                    | 229.0 |
+**Known limitations (reviewed 2026-10-28, see DECISIONS #14/#15).** Stage A is
+not yet a faithful conversion: FAI-LIF emits raw integers (scale/zero-point
+never folded into the next BitLinear), the channel-mix `relu²` is dropped and
+`lif_out` is unsigned, so the converted student starts worse than uniform.
+Batch rows do not continue across steps (DEC-2 streaming not implemented),
+the in-training eval shares state with training, and the teacher reference
+is not fine-tuned on TinyStories. BF16 shadow weights break vanilla AdamW;
+use FP32 master + autocast (DECISIONS #12, #13).
 
-Reading: quantisation costs ~4× in PPL at equal budget; 8-bit activations
-halve the gap. The activation quantiser is the bottleneck (DECISIONS #7),
-not the ternary weights nor the LIF dynamics. The teacher PPL on the same
-eval tail has **not** been measured (`scripts/eval_teacher.py` exists), so
-the 95 % gate is not yet evaluable — but it is almost certainly not met.
-
-**Not yet recorded in `DECISIONS.md`** (journal stops at #13, 2026-05-20):
-the CUDA kernels (charter #1 listed them as out of scope for v0), the FP
-baseline ablation (`scripts/train_fp_baseline.py`, note it also removes
-the LIF recurrence so it is an upper bound), the 8-bit run, and the
-chunked kernel mode (`FAILIF(seq_chunk_size=...)`, run incomplete).
-
-**Known issues.** `grad_norms` in the Stage A metrics are logged after
-`zero_grad` and are always empty (DECISIONS #12). BF16 shadow weights
-break vanilla AdamW; use FP32 master + autocast (DECISIONS #12, #13).
-
-**Suggested next steps.**
-
-1. Measure teacher PPL on the eval tail (`scripts/eval_teacher.py`).
-2. Run a full 10 k-step Stage A with the fused per-step path to settle
-   "budget-limited vs quantisation-limited".
-3. If the plateau holds, implement LSQ (learned step size) for the
-   activations before investing in Stage C (DECISIONS #6).
+**Next steps:** DECISIONS #15 (faithful-conversion ladder with a fine-tuned
+teacher reference, stateless-LIF ablation, KL distillation).
 
 ## Setup
 

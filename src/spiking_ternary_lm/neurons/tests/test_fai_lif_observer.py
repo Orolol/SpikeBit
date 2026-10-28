@@ -129,3 +129,24 @@ def test_compat_properties_for_legacy_callers():
     assert lif.bits == 4
     assert lif.n_min == 0
     assert lif.n_max == 15
+
+
+def test_stateless_lif_dequantized_output_matches_input():
+    """Invariant (review 2026-10-28): with beta = 0 the LIF is a plain affine
+    quantizer, so a constant input must give a constant dequantized output
+    scale * (q - zp) within half a step of the input, at every timestep --
+    the property the pre-fix reset (scale * q) violated from t = 1 on."""
+    torch.manual_seed(0)
+    lif = FAILIF(num_neurons=4, num_bits=4, signed=False, beta_init=1e-6, gamma_init=1.0)
+    lif.train()
+    for _ in range(20):
+        lif(torch.randn(8, 4) * 2.0)  # warm the observer on a broad range
+    lif.eval()
+    scale, zp = lif.observer.get_scale_and_zero_point()
+    lif.reset_state(batch_shape=(2,))
+    x = torch.full((2, 6, 4), 0.37)
+    q = lif(x)
+    deq = scale * (q - zp)
+    assert torch.equal(q, q.round())
+    assert (deq - x).abs().max() <= float(scale) / 2 + 1e-6, (deq[0, :, 0], x[0, :, 0])
+    assert torch.allclose(deq[:, 0], deq[:, -1]), "stateless: same output at every timestep"

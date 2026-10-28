@@ -6,6 +6,10 @@ bottom with a date, status, and rationale. Decisions are **immutable once
 recorded** — if the project changes direction, write a new decision that
 explicitly supersedes the previous one (and note the supersession).
 
+_Entries are listed by number. The May-19 entries were appended out of order
+(#11, #10, #9, #8, #6, #7, #5); they were re-sorted on 2026-10-28 without
+changing their text._
+
 ---
 
 ## Decision #1 — Project charter (2026-05-19)
@@ -115,275 +119,21 @@ training runs; JSON for unit-level scripts.
 
 ---
 
-## Decision #11 — Phase 3.5 real gate met: observer-FAILIF pol #2 ≪ legacy pol #2 (2026-05-19)
-
-**Status:** accepted (Phase 3.5 milestone closed).
-
-Per DEC-10 the real Phase 3.5 gate was: Stage A pol #2 with observer-FAILIF
-must reach a 100-step loss ≤ 38.7 (the legacy v_thr=0.1 baseline) with
-healthy spike stats. Result, same seed=0 / seq_len=16 / batch=2 / 100
-steps / lrs (bitlinear=1e-4, lif=5e-5, rwkv=1e-5, embed_head=1e-4) /
-spiking_r=False:
-
-  * **min loss = 10.25 @ step 70** — 3.8× better than the legacy 38.68.
-  * Spike stats at the best step (12 layers, 60 LIFs): `saturated ≤ 0.003`
-    everywhere, `dead ≤ 0.25` worst-case (mostly < 0.15), fire_norm
-    spread across the signed range with no layer collapsed.
-
-**Calibration-pass finding.** The straightforward `set_calibrating(model,
-True)` warm-up cascades FP membrane values forward through the stack and
-produces wildly inflated observer ranges in deep layers (e.g.
-`blocks.11.channel_mix.lif_v: running_max ≈ 39598`). Those values would
-take >100 EMA steps at momentum=0.01 to recover — they actively hurt
-fine-tuning. We instead rely on the observer's **first-batch-init branch**
-(`update_stats: if num_updates == 0: copy_(cur_min/max)`) which sets
-running stats directly from the first real batch in
-`stage_a_finetune`. The "calibrated checkpoint" we save is therefore one
-with `spiking_r=False` and *empty* observers (`num_updates=0`); the
-script supports `--n-batches 0` to produce it. A future, proper
-calibration would be layer-by-layer (freeze L0 in integer mode →
-calibrate L1 → freeze → ...). Not built yet; not load-bearing for Stage A.
-
-**Implications.**
-
-  1. The observer regime works on real-language activations — confirms
-     DEC-10's prediction that MNIST's "binary-loving" failure was a regime
-     artefact, not a design flaw.
-  2. NSLLM-style activation quantization is now validated end-to-end:
-     observer + STE-quant + soft reset, with `signed_kv=True` and
-     `spiking_r=False`.
-  3. We can proceed to longer Stage A runs (1k–10k steps) with the
-     observer as the default. The 5×-better starting point at step 70
-     suggests the eventual PPL retention vs. teacher should clear the
-     95 % target with margin — but that is a separate gate, not validated
-     here.
-
-**Open items deferred to next phase.**
-
-  * Full Stage A (10k steps, larger seq_len, eval vs. teacher PPL).
-  * Ablations A1 (`spiking_r=True`), A2 (head frozen), A3 (embed frozen)
-    at 1k steps each.
-  * Layer-by-layer calibration script — only if a future regime fails
-    self-init for some reason.
-
----
-
-## Decision #10 — Phase 3.5 MNIST gate accepted as regime shift, not capacity loss (2026-05-19)
+## Decision #5 — GPU sharing protocol (2026-05-19)
 
 **Status:** accepted.
 
-The observer-based :class:`FAILIF` was implemented per the Phase 3.5
-spec (moving-average MinMax per-tensor, EMA momentum 0.01, soft reset
-default). MNIST sanity test accuracy: **91.06 %** (`momentum=0.01`) or
-**90.17 %** (`momentum=1.0`, no EMA), versus **92.45 %** for the legacy
-fixed-threshold variant and the gate criterion of ≥ 92 %.
+The local 5090 is shared with the dmtp Python agent (can hold 18+ GB). The
+SpikeBit project does **not** launch heavy training concurrently. Always
+check `nvidia-smi --query-gpu=memory.used,memory.free,utilization.gpu` before
+running:
 
-The gate is failed by ~1.4 points. We **accept the regression** and
-explain it as a **quantization regime shift**, not a capacity loss in
-the new neuron.
+- `scripts/test_rwkv_baseline.py`
+- `scripts/sanity_mnist.py`
+- any `train_*.py` in `src/spiking_ternary_lm/training/`
 
-**Analysis.**
-
-  * Legacy with ``v_thr=0.5``: ``fire_norm ≈ 0.04`` (most neurons emit
-    0 or 1 spike per call). The network behaves like an implicit
-    binary-activation MLP. MNIST is exceptionally well-suited to
-    binary activations (Courbariaux 2016 showed binarisation is
-    nearly-free on MNIST), so the legacy regime accidentally found a
-    point on the trade-off curve that flatters MNIST.
-  * Observer: ``fire_norm ≈ 0.39`` (full use of the 4-bit range, no
-    saturation). Information-theoretically richer, but for MNIST the
-    extra capacity is not load-bearing — separability does not require
-    integer-rich activations.
-  * Legacy with ``v_thr=0.1``: ``fire_norm`` does rise to ≈ 0.46, but
-    with **45 % saturation** in the original sweep (no RMSNorm) or low
-    fire-norm + loss-stall under RMSNorm. The fixed-scale variant
-    cannot simultaneously reach high fire-norm AND zero saturation —
-    that's a geometric impossibility when the input distribution has a
-    long tail. The observer handles this by definition.
-  * Observer with ``momentum=1.0`` (no EMA): 90.17 % — confirms the
-    regression is not caused by the EMA smoothing, but by the regime
-    change itself. Observer math is correct.
-
-**Why we accept it.**
-
-  1. The integer-rich regime is precisely what NSLLM-style activation
-     quantization is designed to produce; it's load-bearing on
-     real-language tasks where activation distributions are non-binary
-     and bimodal.
-  2. Stage A activations come from the pre-trained RWKV-4 teacher;
-     their distributions are emphatically not in the "MNIST loves
-     binaries" regime, so the legacy's accidental win doesn't replicate.
-  3. The observer's behaviour on MNIST is not predictive of its
-     behaviour on Stage A.
-
-**Updated gate (revises DECISIONS.md #6 for observer-based variants):**
-
-  * `_diagnose_mlp.py` (FP ReLU): ≥ 97 % — unchanged.
-  * `_diagnose_quantizer.py` (4-bit STE nu): ≥ 93 % — unchanged.
-  * Observer-based FAI-LIF on MNIST: **≥ 90 %** (down from 92 %, with
-    the explicit understanding that the integer-rich regime is the
-    point and MNIST is no longer the load-bearing validation). The
-    real validation milestone for the observer is the Stage A
-    prove-of-life #2 with the observer in place: it must reach a loss
-    ≤ that of pol #2 with `init_v_thr=0.1` patch (38.7 after 100
-    steps) with healthy spike stats across all layers.
-  * Legacy FAI-LIF: ≥ 92 % unchanged.
-
-**Meta-note on goal-post movement.** Lowering the gate from 92 % to
-90 % for the observer variant is calibration to the regime, not
-weakening the criterion. It is *defensible* but only because the
-integer-rich regime is what we want Stage A to use. The legacy 92 %
-remains the gate for the legacy variant. If three months from now
-someone asks "why is the observer gate at 90 %?", this entry is the
-answer.
-
----
-
-## Decision #9 — Stage A prove-of-life findings + open issues (2026-05-19)
-
-**Status:** accepted (Phase 3 gate #3 met under revised hyper-parameters).
-
-**Pipeline delivered (Phase 3).**
-  * `conversion/rwkv_loader.py` — downloads `RWKV/rwkv-4-169m-pile`,
-    extracts FP state-dict + shape inventory.
-  * `conversion/swap_layers.py` — static name map for 222 HF tensors
-    onto our `SpikingTernaryRWKV` keys. Time-mix `time_mix_*` squeezed
-    from `(1,1,H)` to `(H,)`. LIF params (`beta_logit`, `gamma_logit`,
-    `v_thr`) have no teacher equivalent and keep their default init.
-  * `scripts/convert_rwkv.py` — drives conversion, saves a 678 MB
-    student checkpoint.
-  * `training/data.py` — TinyStories tokenize-and-pack pipeline (~240K
-    tokens for 1000-example sample, ~400M tokens for full corpus).
-  * `training/stage_a_finetune.py` — per-spec optimizer groups
-    (BitLinear 1e-4, LIF 5e-5, RWKV recurrent 1e-5, embed/head 0 by
-    default), linear-warmup-cosine LR schedule, grad-clip 1.0, JSONL
-    metrics with spike + weight-distribution + grad-norm logging,
-    periodic ckpt + eval.
-  * `scripts/train_stage_a.py` — driver.
-
-**Prove-of-life run #1 (spec defaults).** With `init_v_thr=0.5`,
-`spiking_r=True`, embed/head frozen:
-  * CE post-conversion: 46.99 (random would be ~10.8 — catastrophic).
-  * 100 steps fine-tune: loss stagnant at 51–56. `lif_r` fire_norm
-    0.000 (receptance LIF completely dead). Eval PPL ≈ 2 × 10²² (junk).
-
-**Diagnosis.** Three independent problems compounded:
-  1. **`init_v_thr=0.5` too high** vs. typical RWKV projection
-     magnitudes (mean(|w|) ≈ 0.02 in the teacher; BitLinear post-quant
-     output is on the order of 0.1–0.3). Most FAI-LIF neurons output
-     0 → no information flow → no learning.
-  2. **`spiking_r=True` collapses receptance** because for a typical
-     small projection output, FAI-LIF outputs 0 → `sigmoid(0) = 0.5`
-     → constant gate → time-mix gives wkv * 0.5 with no
-     receptance-driven gating at all.
-  3. **Embed + head frozen** while the rest of the model produces
-     wildly different hidden states than the teacher. The FP head was
-     trained on the teacher's FP hidden distribution; the student
-     emits integer-spike hiddens with totally different statistics. No
-     amount of optimisation on the middle layers can recover when the
-     output mapping is locked.
-
-**Prove-of-life run #2 (revised).** With `init_v_thr=0.1`,
-`spiking_r=False` (FP receptance), embed/head trainable (`lr=1e-4`):
-  * CE post-conversion: 33.87 (–13 nats vs. run #1).
-  * 100 steps: loss 45.6 → 38.7 (clearly descending).
-  * `lif_k` fire_norm 0.13–0.52, `lif_out` 0.08–0.10 (active).
-  * 0.6 s/step → 10 k steps = ~1.7 h on the 5090. Tractable.
-
-**Decision-gate #3 (spec).** "First checkpoint shows loss decreasing,
-decide if hyperparameters need adjustment." Met, with the revised
-hyper-parameters above. Full Stage A (10k+ steps) was not launched in
-autonomous mode — that's a multi-hour run and the gate review is
-better done with Gaétan present.
-
-**Recommended Stage A defaults going forward** (to be confirmed with
-Gaétan):
-  * `init_v_thr=0.1` (low; eventually replaced by NSLLM-style
-    moving-average MinMax calibration — risk tracked in #6).
-  * `spiking_r=False` (FP sigmoid receptance, native RWKV gating).
-  * `lr_embed_head=1e-4` (unfrozen).
-  * Other LRs per spec (`lr_bitlinear=1e-4`, `lr_lif=5e-5`,
-    `lr_rwkv=1e-5`).
-
-**Memory blow-up note.** A first prove-of-life attempt with
-`seq_len=128, batch=4` OOMed at 29 GB VRAM. The explicit Python WKV
-loop + per-step BitLinear quantization keeps all intermediates in the
-autograd graph; memory scales as `O(seq_len × batch × layers ×
-hidden)`. For Stage A's full training the seq_len/batch tuple needs
-to stay small, OR a more efficient WKV implementation (chunked
-forward / gradient checkpointing / custom kernel) is needed. Custom
-CUDA kernels are out of scope for v0 (spec) — gradient checkpointing
-is the next thing to try.
-
----
-
-## Decision #8 — Phase 2 build + design choices on top of the spec (2026-05-19)
-
-**Status:** accepted.
-
-Phase 2 implements the spiking-ternary RWKV-4 architecture per the spec.
-A few interpretation choices that go beyond the literal spec are listed
-here so they can be revisited in Phase 3.
-
-**Structure delivered.**
-
-  * `layers/spiking_rwkv.py` — `SpikingRWKVTimeMix`: token-shift,
-    BitLinear R/K/V, FAI-LIF on each, WKV in FP32 with BlinkDL's
-    stable ``pp``-tracked formulation, BitLinear_O after a final
-    FAI-LIF. Per-step and per-sequence forward.
-  * `layers/spiking_ffn.py` — `SpikingRWKVChannelMix`: token-shift,
-    BitLinear K/V/R with FAI-LIF on K and V, FP sigmoid gate on R.
-  * `layers/block.py` — `RWKVBlock`: pre-norm + TimeMix + residual +
-    pre-norm + ChannelMix + residual.
-  * `layers/norms.py` — `RMSNorm` (added in Phase 1) is unused here
-    because the spec puts ``nn.LayerNorm`` in front of each block.
-    RMSNorm is kept available for ablations.
-  * `model/config.py` — `SpikingTernaryRWKVConfig` dataclass with
-    `tiny()` (debug) and `small_169m()` (Stage A target) presets.
-  * `model/model.py` — `SpikingTernaryRWKV`: FP embedding, FP input
-    LayerNorm, N × RWKVBlock, FP output LayerNorm, FP lm_head (matches
-    DECISIONS.md #2 about what is FP vs ternary).
-  * `scripts/phase2_forward_sanity.py` — the gate-#2 driver.
-
-**Gate #2 measured (2026-05-19).**
-
-  * All blocks forward+backward without crash on `(B=3, T=5, H=64)`.
-  * Per-step and per-sequence forward agree exactly (max abs diff 0.0).
-  * `tiny` model (500 K params): forward 1120 tok/s on the 5090, CE
-    loss on random init 5.74 ≈ log(vocab=256)=5.55 ✓.
-  * `small_169m` model: **169.51 M trainable params** — matches the
-    NSLLM 169M target exactly and the official RWKV-4-169M-Pile shape,
-    so Stage A teacher-weight loading should be a clean per-tensor
-    rename.
-  * 169 M forward on (B=1, T=8): 0.21 s. Output (1, 8, 50277), all
-    finite.
-
-**Open interpretation choices** (revisit in Phase 3):
-
-  1. **Signed FAI-LIF for `k` and `v` in time-mix** (default
-     `signed_kv=True`). Reason: feeding ``exp(k)`` inside WKV with
-     unsigned ``k ∈ {0..15}`` blows the dynamic range (`exp(15) ≈
-     3.3M`). Signed `{-8..7}` keeps `exp` ≤ ~1100. The spec says
-     "Apply FAI-LIF to r, k, v" without specifying sign. Toggle is
-     exposed; revisit when running Stage A and watching ``pp``
-     saturation.
-  2. **`sigmoid(r)` after FAI-LIF on r**. With integer-spike `r ∈
-     {0..15}`, sigmoid collapses to ~1 for any spike — making the
-     "gate" essentially binary (open if any spike fires). Literal spec.
-     `spiking_r=False` keeps `r` as FP if we want to compare.
-  3. **WKV state is grad-tracked within a forward call**, detached
-     between calls via `model.detach_state()`. Caller manages BPTT
-     windowing. This matches LIF state policy from Phase 1.
-  4. **Per-block initialization of `time_decay`, `time_first`, `mu_*`
-     follows the BlinkDL RWKV-4 reference** rather than the abridged
-     spec. Diverges minimally; should be a no-op for Stage A since
-     Stage A overwrites these with teacher values during conversion.
-
-**Risk tracked for Stage A.** The 4-bit activation cap identified in
-DECISIONS.md #6 / #7 still applies. In Phase 3 we will replace the
-fixed `init_v_thr` with NSLLM's moving-average MinMax calibration of
-``v_thr`` from running activation stats. If that also caps, escalate to
-LSQ before Stage C.
+If used memory > 8 GB or utilization > 30 %, wait and poll instead of
+launching.
 
 ---
 
@@ -473,21 +223,275 @@ one-liner. The complexity does not correlate with fragility.
 
 ---
 
-## Decision #5 — GPU sharing protocol (2026-05-19)
+## Decision #8 — Phase 2 build + design choices on top of the spec (2026-05-19)
 
 **Status:** accepted.
 
-The local 5090 is shared with the dmtp Python agent (can hold 18+ GB). The
-SpikeBit project does **not** launch heavy training concurrently. Always
-check `nvidia-smi --query-gpu=memory.used,memory.free,utilization.gpu` before
-running:
+Phase 2 implements the spiking-ternary RWKV-4 architecture per the spec.
+A few interpretation choices that go beyond the literal spec are listed
+here so they can be revisited in Phase 3.
 
-- `scripts/test_rwkv_baseline.py`
-- `scripts/sanity_mnist.py`
-- any `train_*.py` in `src/spiking_ternary_lm/training/`
+**Structure delivered.**
 
-If used memory > 8 GB or utilization > 30 %, wait and poll instead of
-launching.
+  * `layers/spiking_rwkv.py` — `SpikingRWKVTimeMix`: token-shift,
+    BitLinear R/K/V, FAI-LIF on each, WKV in FP32 with BlinkDL's
+    stable ``pp``-tracked formulation, BitLinear_O after a final
+    FAI-LIF. Per-step and per-sequence forward.
+  * `layers/spiking_ffn.py` — `SpikingRWKVChannelMix`: token-shift,
+    BitLinear K/V/R with FAI-LIF on K and V, FP sigmoid gate on R.
+  * `layers/block.py` — `RWKVBlock`: pre-norm + TimeMix + residual +
+    pre-norm + ChannelMix + residual.
+  * `layers/norms.py` — `RMSNorm` (added in Phase 1) is unused here
+    because the spec puts ``nn.LayerNorm`` in front of each block.
+    RMSNorm is kept available for ablations.
+  * `model/config.py` — `SpikingTernaryRWKVConfig` dataclass with
+    `tiny()` (debug) and `small_169m()` (Stage A target) presets.
+  * `model/model.py` — `SpikingTernaryRWKV`: FP embedding, FP input
+    LayerNorm, N × RWKVBlock, FP output LayerNorm, FP lm_head (matches
+    DECISIONS.md #2 about what is FP vs ternary).
+  * `scripts/phase2_forward_sanity.py` — the gate-#2 driver.
+
+**Gate #2 measured (2026-05-19).**
+
+  * All blocks forward+backward without crash on `(B=3, T=5, H=64)`.
+  * Per-step and per-sequence forward agree exactly (max abs diff 0.0).
+  * `tiny` model (500 K params): forward 1120 tok/s on the 5090, CE
+    loss on random init 5.74 ≈ log(vocab=256)=5.55 ✓.
+  * `small_169m` model: **169.51 M trainable params** — matches the
+    NSLLM 169M target exactly and the official RWKV-4-169M-Pile shape,
+    so Stage A teacher-weight loading should be a clean per-tensor
+    rename.
+  * 169 M forward on (B=1, T=8): 0.21 s. Output (1, 8, 50277), all
+    finite.
+
+**Open interpretation choices** (revisit in Phase 3):
+
+  1. **Signed FAI-LIF for `k` and `v` in time-mix** (default
+     `signed_kv=True`). Reason: feeding ``exp(k)`` inside WKV with
+     unsigned ``k ∈ {0..15}`` blows the dynamic range (`exp(15) ≈
+     3.3M`). Signed `{-8..7}` keeps `exp` ≤ ~1100. The spec says
+     "Apply FAI-LIF to r, k, v" without specifying sign. Toggle is
+     exposed; revisit when running Stage A and watching ``pp``
+     saturation.
+  2. **`sigmoid(r)` after FAI-LIF on r**. With integer-spike `r ∈
+     {0..15}`, sigmoid collapses to ~1 for any spike — making the
+     "gate" essentially binary (open if any spike fires). Literal spec.
+     `spiking_r=False` keeps `r` as FP if we want to compare.
+  3. **WKV state is grad-tracked within a forward call**, detached
+     between calls via `model.detach_state()`. Caller manages BPTT
+     windowing. This matches LIF state policy from Phase 1.
+  4. **Per-block initialization of `time_decay`, `time_first`, `mu_*`
+     follows the BlinkDL RWKV-4 reference** rather than the abridged
+     spec. Diverges minimally; should be a no-op for Stage A since
+     Stage A overwrites these with teacher values during conversion.
+
+**Risk tracked for Stage A.** The 4-bit activation cap identified in
+DECISIONS.md #6 / #7 still applies. In Phase 3 we will replace the
+fixed `init_v_thr` with NSLLM's moving-average MinMax calibration of
+``v_thr`` from running activation stats. If that also caps, escalate to
+LSQ before Stage C.
+
+---
+
+## Decision #9 — Stage A prove-of-life findings + open issues (2026-05-19)
+
+**Status:** accepted (Phase 3 gate #3 met under revised hyper-parameters).
+
+**Pipeline delivered (Phase 3).**
+  * `conversion/rwkv_loader.py` — downloads `RWKV/rwkv-4-169m-pile`,
+    extracts FP state-dict + shape inventory.
+  * `conversion/swap_layers.py` — static name map for 222 HF tensors
+    onto our `SpikingTernaryRWKV` keys. Time-mix `time_mix_*` squeezed
+    from `(1,1,H)` to `(H,)`. LIF params (`beta_logit`, `gamma_logit`,
+    `v_thr`) have no teacher equivalent and keep their default init.
+  * `scripts/convert_rwkv.py` — drives conversion, saves a 678 MB
+    student checkpoint.
+  * `training/data.py` — TinyStories tokenize-and-pack pipeline (~240K
+    tokens for 1000-example sample, ~400M tokens for full corpus).
+  * `training/stage_a_finetune.py` — per-spec optimizer groups
+    (BitLinear 1e-4, LIF 5e-5, RWKV recurrent 1e-5, embed/head 0 by
+    default), linear-warmup-cosine LR schedule, grad-clip 1.0, JSONL
+    metrics with spike + weight-distribution + grad-norm logging,
+    periodic ckpt + eval.
+  * `scripts/train_stage_a.py` — driver.
+
+**Prove-of-life run #1 (spec defaults).** With `init_v_thr=0.5`,
+`spiking_r=True`, embed/head frozen:
+  * CE post-conversion: 46.99 (random would be ~10.8 — catastrophic).
+  * 100 steps fine-tune: loss stagnant at 51–56. `lif_r` fire_norm
+    0.000 (receptance LIF completely dead). Eval PPL ≈ 2 × 10²² (junk).
+
+**Diagnosis.** Three independent problems compounded:
+  1. **`init_v_thr=0.5` too high** vs. typical RWKV projection
+     magnitudes (mean(|w|) ≈ 0.02 in the teacher; BitLinear post-quant
+     output is on the order of 0.1–0.3). Most FAI-LIF neurons output
+     0 → no information flow → no learning.
+  2. **`spiking_r=True` collapses receptance** because for a typical
+     small projection output, FAI-LIF outputs 0 → `sigmoid(0) = 0.5`
+     → constant gate → time-mix gives wkv * 0.5 with no
+     receptance-driven gating at all.
+  3. **Embed + head frozen** while the rest of the model produces
+     wildly different hidden states than the teacher. The FP head was
+     trained on the teacher's FP hidden distribution; the student
+     emits integer-spike hiddens with totally different statistics. No
+     amount of optimisation on the middle layers can recover when the
+     output mapping is locked.
+
+**Prove-of-life run #2 (revised).** With `init_v_thr=0.1`,
+`spiking_r=False` (FP receptance), embed/head trainable (`lr=1e-4`):
+  * CE post-conversion: 33.87 (–13 nats vs. run #1).
+  * 100 steps: loss 45.6 → 38.7 (clearly descending).
+  * `lif_k` fire_norm 0.13–0.52, `lif_out` 0.08–0.10 (active).
+  * 0.6 s/step → 10 k steps = ~1.7 h on the 5090. Tractable.
+
+**Decision-gate #3 (spec).** "First checkpoint shows loss decreasing,
+decide if hyperparameters need adjustment." Met, with the revised
+hyper-parameters above. Full Stage A (10k+ steps) was not launched in
+autonomous mode — that's a multi-hour run and the gate review is
+better done with Gaétan present.
+
+**Recommended Stage A defaults going forward** (to be confirmed with
+Gaétan):
+  * `init_v_thr=0.1` (low; eventually replaced by NSLLM-style
+    moving-average MinMax calibration — risk tracked in #6).
+  * `spiking_r=False` (FP sigmoid receptance, native RWKV gating).
+  * `lr_embed_head=1e-4` (unfrozen).
+  * Other LRs per spec (`lr_bitlinear=1e-4`, `lr_lif=5e-5`,
+    `lr_rwkv=1e-5`).
+
+**Memory blow-up note.** A first prove-of-life attempt with
+`seq_len=128, batch=4` OOMed at 29 GB VRAM. The explicit Python WKV
+loop + per-step BitLinear quantization keeps all intermediates in the
+autograd graph; memory scales as `O(seq_len × batch × layers ×
+hidden)`. For Stage A's full training the seq_len/batch tuple needs
+to stay small, OR a more efficient WKV implementation (chunked
+forward / gradient checkpointing / custom kernel) is needed. Custom
+CUDA kernels are out of scope for v0 (spec) — gradient checkpointing
+is the next thing to try.
+
+---
+
+## Decision #10 — Phase 3.5 MNIST gate accepted as regime shift, not capacity loss (2026-05-19)
+
+**Status:** accepted.
+
+The observer-based :class:`FAILIF` was implemented per the Phase 3.5
+spec (moving-average MinMax per-tensor, EMA momentum 0.01, soft reset
+default). MNIST sanity test accuracy: **91.06 %** (`momentum=0.01`) or
+**90.17 %** (`momentum=1.0`, no EMA), versus **92.45 %** for the legacy
+fixed-threshold variant and the gate criterion of ≥ 92 %.
+
+The gate is failed by ~1.4 points. We **accept the regression** and
+explain it as a **quantization regime shift**, not a capacity loss in
+the new neuron.
+
+**Analysis.**
+
+  * Legacy with ``v_thr=0.5``: ``fire_norm ≈ 0.04`` (most neurons emit
+    0 or 1 spike per call). The network behaves like an implicit
+    binary-activation MLP. MNIST is exceptionally well-suited to
+    binary activations (Courbariaux 2016 showed binarisation is
+    nearly-free on MNIST), so the legacy regime accidentally found a
+    point on the trade-off curve that flatters MNIST.
+  * Observer: ``fire_norm ≈ 0.39`` (full use of the 4-bit range, no
+    saturation). Information-theoretically richer, but for MNIST the
+    extra capacity is not load-bearing — separability does not require
+    integer-rich activations.
+  * Legacy with ``v_thr=0.1``: ``fire_norm`` does rise to ≈ 0.46, but
+    with **45 % saturation** in the original sweep (no RMSNorm) or low
+    fire-norm + loss-stall under RMSNorm. The fixed-scale variant
+    cannot simultaneously reach high fire-norm AND zero saturation —
+    that's a geometric impossibility when the input distribution has a
+    long tail. The observer handles this by definition.
+  * Observer with ``momentum=1.0`` (no EMA): 90.17 % — confirms the
+    regression is not caused by the EMA smoothing, but by the regime
+    change itself. Observer math is correct.
+
+**Why we accept it.**
+
+  1. The integer-rich regime is precisely what NSLLM-style activation
+     quantization is designed to produce; it's load-bearing on
+     real-language tasks where activation distributions are non-binary
+     and bimodal.
+  2. Stage A activations come from the pre-trained RWKV-4 teacher;
+     their distributions are emphatically not in the "MNIST loves
+     binaries" regime, so the legacy's accidental win doesn't replicate.
+  3. The observer's behaviour on MNIST is not predictive of its
+     behaviour on Stage A.
+
+**Updated gate (revises DECISIONS.md #6 for observer-based variants):**
+
+  * `_diagnose_mlp.py` (FP ReLU): ≥ 97 % — unchanged.
+  * `_diagnose_quantizer.py` (4-bit STE nu): ≥ 93 % — unchanged.
+  * Observer-based FAI-LIF on MNIST: **≥ 90 %** (down from 92 %, with
+    the explicit understanding that the integer-rich regime is the
+    point and MNIST is no longer the load-bearing validation). The
+    real validation milestone for the observer is the Stage A
+    prove-of-life #2 with the observer in place: it must reach a loss
+    ≤ that of pol #2 with `init_v_thr=0.1` patch (38.7 after 100
+    steps) with healthy spike stats across all layers.
+  * Legacy FAI-LIF: ≥ 92 % unchanged.
+
+**Meta-note on goal-post movement.** Lowering the gate from 92 % to
+90 % for the observer variant is calibration to the regime, not
+weakening the criterion. It is *defensible* but only because the
+integer-rich regime is what we want Stage A to use. The legacy 92 %
+remains the gate for the legacy variant. If three months from now
+someone asks "why is the observer gate at 90 %?", this entry is the
+answer.
+
+---
+
+## Decision #11 — Phase 3.5 real gate met: observer-FAILIF pol #2 ≪ legacy pol #2 (2026-05-19)
+
+**Status:** accepted (Phase 3.5 milestone closed).
+
+Per DEC-10 the real Phase 3.5 gate was: Stage A pol #2 with observer-FAILIF
+must reach a 100-step loss ≤ 38.7 (the legacy v_thr=0.1 baseline) with
+healthy spike stats. Result, same seed=0 / seq_len=16 / batch=2 / 100
+steps / lrs (bitlinear=1e-4, lif=5e-5, rwkv=1e-5, embed_head=1e-4) /
+spiking_r=False:
+
+  * **min loss = 10.25 @ step 70** — 3.8× better than the legacy 38.68.
+  * Spike stats at the best step (12 layers, 60 LIFs): `saturated ≤ 0.003`
+    everywhere, `dead ≤ 0.25` worst-case (mostly < 0.15), fire_norm
+    spread across the signed range with no layer collapsed.
+
+**Calibration-pass finding.** The straightforward `set_calibrating(model,
+True)` warm-up cascades FP membrane values forward through the stack and
+produces wildly inflated observer ranges in deep layers (e.g.
+`blocks.11.channel_mix.lif_v: running_max ≈ 39598`). Those values would
+take >100 EMA steps at momentum=0.01 to recover — they actively hurt
+fine-tuning. We instead rely on the observer's **first-batch-init branch**
+(`update_stats: if num_updates == 0: copy_(cur_min/max)`) which sets
+running stats directly from the first real batch in
+`stage_a_finetune`. The "calibrated checkpoint" we save is therefore one
+with `spiking_r=False` and *empty* observers (`num_updates=0`); the
+script supports `--n-batches 0` to produce it. A future, proper
+calibration would be layer-by-layer (freeze L0 in integer mode →
+calibrate L1 → freeze → ...). Not built yet; not load-bearing for Stage A.
+
+**Implications.**
+
+  1. The observer regime works on real-language activations — confirms
+     DEC-10's prediction that MNIST's "binary-loving" failure was a regime
+     artefact, not a design flaw.
+  2. NSLLM-style activation quantization is now validated end-to-end:
+     observer + STE-quant + soft reset, with `signed_kv=True` and
+     `spiking_r=False`.
+  3. We can proceed to longer Stage A runs (1k–10k steps) with the
+     observer as the default. The 5×-better starting point at step 70
+     suggests the eventual PPL retention vs. teacher should clear the
+     95 % target with margin — but that is a separate gate, not validated
+     here.
+
+**Open items deferred to next phase.**
+
+  * Full Stage A (10k steps, larger seq_len, eval vs. teacher PPL).
+  * Ablations A1 (`spiking_r=True`), A2 (head frozen), A3 (embed frozen)
+    at 1k steps each.
+  * Layer-by-layer calibration script — only if a future regime fails
+    self-init for some reason.
 
 ---
 
@@ -614,7 +618,6 @@ vanilla AdamW.
 
 **Smoke logs.** ``/tmp/smoke_fp32.log`` and ``/tmp/smoke_bf16.log``.
 
-
 ---
 
 ## Decision #13 — Mixed-precision via autocast: FP32 master + BF16 compute (2026-05-20)
@@ -689,7 +692,6 @@ to bound the final-eval split).**
 **Test status.** ``uv run pytest src/spiking_ternary_lm/`` → 105 passed.
 
 **Smoke logs.** ``/tmp/mp_fp32.log`` and ``/tmp/mp_bf16.log``.
-
 
 ---
 
