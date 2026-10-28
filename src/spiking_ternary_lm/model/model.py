@@ -30,6 +30,7 @@ from torch import Tensor, nn
 
 from spiking_ternary_lm.layers.block import RWKVBlock
 from spiking_ternary_lm.model.config import SpikingTernaryRWKVConfig
+from spiking_ternary_lm.neurons.fai_lif import enable_lsq
 
 
 class SpikingTernaryRWKV(nn.Module):
@@ -58,6 +59,10 @@ class SpikingTernaryRWKV(nn.Module):
         )
         self.ln_out = nn.LayerNorm(config.hidden_size)
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
+        if getattr(config, "act_quant", "minmax") == "lsq":
+            enable_lsq(self, init_steps=getattr(config, "lsq_init_steps", 1))
+        elif getattr(config, "act_quant", "minmax") != "minmax":
+            raise ValueError(f"unknown act_quant {config.act_quant!r} (minmax | lsq)")
         if config.tie_word_embeddings:
             self.lm_head.weight = self.embed.weight
 

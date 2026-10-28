@@ -108,6 +108,11 @@ class StageAArgs:
     # Freeze every FAI-LIF observer (quantization grid) from this optimizer
     # step on. 0 = never (observers track activations for the whole run).
     freeze_observers_at: int = 0
+    # Override the checkpoint's activation quantizer: "" keeps the stored
+    # config, "minmax" or "lsq" forces it (a MinMax checkpoint loads into an
+    # LSQ model; the LSQ grids are initialised from the first batch).
+    act_quant: str = ""
+    lsq_init_steps: int = 1
 
 
 def make_param_groups(model: SpikingTernaryRWKV, args: StageAArgs) -> list[dict]:
@@ -127,7 +132,7 @@ def make_param_groups(model: SpikingTernaryRWKV, args: StageAArgs) -> list[dict]
             embed_head_params.append(p)
         elif "shadow_weight" in name:
             bitlinear_params.append(p)
-        elif "beta_logit" in name or "gamma_logit" in name:
+        elif "beta_logit" in name or "gamma_logit" in name or "lsq_" in name:
             lif_params.append(p)
         elif any(k in name for k in ("time_decay", "time_first", "mu_r", "mu_k", "mu_v")):
             rwkv_recurrent_params.append(p)
@@ -234,6 +239,12 @@ def train(args: StageAArgs) -> int:
         if new_dtype is not cfg.weight_dtype:
             LOG.info("overriding weight_dtype: %s -> %s", cfg.weight_dtype, new_dtype)
             cfg.weight_dtype = new_dtype
+    if args.act_quant:
+        if args.act_quant not in ("minmax", "lsq"):
+            raise ValueError(f"--act-quant must be minmax or lsq; got {args.act_quant}")
+        LOG.info("overriding act_quant: %s -> %s", getattr(cfg, "act_quant", "minmax"), args.act_quant)
+        cfg.act_quant = args.act_quant
+        cfg.lsq_init_steps = int(args.lsq_init_steps)
     if args.observer_momentum > 0:
         LOG.info(
             "overriding observer_momentum: %s -> %s",

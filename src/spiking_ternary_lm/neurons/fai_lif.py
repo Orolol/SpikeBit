@@ -36,7 +36,7 @@ import math
 import torch
 from torch import Tensor, nn
 
-from spiking_ternary_lm.neurons.fai_lif_op import fai_lif_apply
+from spiking_ternary_lm.neurons.fai_lif_op import fai_lif_apply, lsq_fai_lif_apply
 from spiking_ternary_lm.quantization.observers import MovingAverageMinMaxObserver
 from spiking_ternary_lm.quantization.ste import ste_quantize_integer
 
@@ -229,6 +229,10 @@ class FAILIF(nn.Module):
         # train mode (quantization grid frozen). Set by the trainer after a
         # warm-up to rule out grid drift as a source of late instability.
         self.observer_frozen = False
+        # Activation quantizer: "minmax" (observer-tracked grid, default) or
+        # "lsq" (learned step size + offset, see :meth:`enable_lsq`).
+        self.act_quant = "minmax"
+        self.lsq_init_steps = 1
         # Calibration: if True, observer updates stats but the spike
         # output is meaningless (we still produce one for shape parity,
         # but don't reset the membrane potential). Set via
@@ -268,6 +272,41 @@ class FAILIF(nn.Module):
 
         # Membrane potential. Lazy init on first forward.
         self.register_buffer("v", torch.zeros(0), persistent=False)
+
+    # ----------------------------------------------------------------------
+    # LSQ mode (DECISIONS #14): the grid becomes two learnable scalars.
+    # ----------------------------------------------------------------------
+
+    def enable_lsq(self, init_steps: int = 1) -> None:
+        """Switch this LIF to a learned step size (LSQ, Esser et al. 2020).
+
+        ``lsq_scale`` / ``lsq_offset`` are per-tensor parameters
+        (``zp = -offset / scale``). They are initialised from the MinMax
+        observer after ``init_steps`` training sequence-forwards (the
+        observer keeps tracking during that warm-up, then stops), so a
+        MinMax checkpoint can be loaded as-is. ``lsq_initialized`` is a
+        persistent buffer so a saved LSQ checkpoint does not re-init.
+        """
+        if self.act_quant == "lsq":
+            return
+        self.act_quant = "lsq"
+        self.lsq_init_steps = int(init_steps)
+        self.lsq_scale = nn.Parameter(torch.tensor(1.0, dtype=torch.float32))
+        self.lsq_offset = nn.Parameter(torch.tensor(0.0, dtype=torch.float32))
+        self.register_buffer("lsq_initialized", torch.tensor(0, dtype=torch.long))
+        self.register_buffer("lsq_seen", torch.tensor(0, dtype=torch.long), persistent=False)
+
+    def _lsq_init_from_observer(self) -> None:
+        with torch.no_grad():
+            scale, zp = self.observer.get_scale_and_zero_point()
+            self.lsq_scale.copy_(scale.to(torch.float32))
+            # zp = qmin - round(min / scale)  =>  offset = -zp * scale
+            self.lsq_offset.copy_((-zp * scale).to(torch.float32))
+            self.lsq_initialized.fill_(1)
+
+    def _lsq_params(self) -> tuple[Tensor, Tensor]:
+        s = self.lsq_scale.clamp(min=self.observer.eps)
+        return s, self.lsq_offset
 
     # ----------------------------------------------------------------------
     # Compatibility shims so the rest of the codebase can still use
@@ -364,7 +403,9 @@ class FAILIF(nn.Module):
         v_pre = beta * self.v + x
 
         # Observer pass-through (stats update if in training mode).
-        if not self.observer_frozen:
+        if not self.observer_frozen and not (
+            self.act_quant == "lsq" and int(self.lsq_initialized) == 1
+        ):
             self.observer(v_pre)
 
         if self.calibrating:
@@ -375,7 +416,11 @@ class FAILIF(nn.Module):
             # is preserved; values are NOT meaningful integer spikes.
             return v_pre.to(x.dtype)
 
-        scale, zero_point = self.observer.get_scale_and_zero_point()
+        if self.act_quant == "lsq" and int(self.lsq_initialized) == 1:
+            s_, off_ = self._lsq_params()
+            scale, zero_point = s_.detach(), (-off_ / s_).detach()
+        else:
+            scale, zero_point = self.observer.get_scale_and_zero_point()
         # Cast to x.dtype for the multiplication below.
         scale_dt = scale.to(x.dtype)
         zp_dt = zero_point.to(x.dtype)
@@ -425,18 +470,44 @@ class FAILIF(nn.Module):
         ):
             self.v = torch.zeros(target_v_shape, device=x.device, dtype=torch.float32)
 
-        # CPU path (no kernel): fall back to looping the per-step path.
-        # This preserves bit-exact CPU behaviour with the legacy code.
-        if not x.is_cuda:
+        if self.calibrating:
+            # Calibration: per-step fallback (kernel can't express the
+            # "v_new = v_pre, no reset" calibrating semantic). Cheap because
+            # calibration is a brief one-shot pass.
             outs = []
             for t in range(T):
                 outs.append(self._forward_step(x[:, t]))
             return torch.stack(outs, dim=1)
 
-        if self.calibrating:
-            # Calibration: per-step fallback (kernel can't express the
-            # "v_new = v_pre, no reset" calibrating semantic). Cheap because
-            # calibration is a brief one-shot pass.
+        # --- LSQ path: one fused call, grid = learnable (scale, offset) ----
+        if self.act_quant == "lsq":
+            if int(self.lsq_initialized) == 0:
+                # Warm-up: MinMax path (observer tracking) for lsq_init_steps
+                # training calls, then freeze the grid into the parameters.
+                out = self._forward_sequence_minmax(x)
+                if self.training:
+                    self.lsq_seen += 1
+                    if int(self.lsq_seen) >= self.lsq_init_steps:
+                        self._lsq_init_from_observer()
+                return out
+            s_, off_ = self._lsq_params()
+            spike_seq, _v_pre, v_final = lsq_fai_lif_apply(
+                x.to(torch.float32).contiguous(),
+                self.beta.to(torch.float32).contiguous(),
+                self.gamma.to(torch.float32).contiguous(),
+                self.v.to(torch.float32),
+                s_, off_, self.observer.qmin, self.observer.qmax,
+            )
+            self.v = v_final.detach()
+            return spike_seq.to(x.dtype)
+
+        return self._forward_sequence_minmax(x)
+
+    def _forward_sequence_minmax(self, x: Tensor) -> Tensor:
+        B, T, H = x.shape
+        # CPU path (no kernel): fall back to looping the per-step path.
+        # This preserves bit-exact CPU behaviour with the legacy code.
+        if not x.is_cuda:
             outs = []
             for t in range(T):
                 outs.append(self._forward_step(x[:, t]))
@@ -506,6 +577,16 @@ class FAILIF(nn.Module):
 # =========================================================================
 # Model-wide helpers
 # =========================================================================
+
+
+def enable_lsq(model: nn.Module, init_steps: int = 1) -> int:
+    """Switch every :class:`FAILIF` in ``model`` to LSQ. Returns the count."""
+    n = 0
+    for m in model.modules():
+        if isinstance(m, FAILIF):
+            m.enable_lsq(init_steps=init_steps)
+            n += 1
+    return n
 
 
 def set_calibrating(model: nn.Module, flag: bool) -> int:

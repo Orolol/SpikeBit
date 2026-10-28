@@ -29,6 +29,10 @@ class SpikingTernaryRWKVConfig:
     # Moving-average MinMax observer (replaces ``init_v_thr`` in the new
     # FAI-LIF — see DECISIONS.md #6, #7, #9, Phase 3.5 spec).
     observer_momentum: float = 0.01
+    # Activation quantizer for every FAI-LIF: "minmax" (observer-tracked,
+    # NSLLM-style) or "lsq" (learned step size, DECISIONS #14).
+    act_quant: str = "minmax"
+    lsq_init_steps: int = 1
     # Kept for back-compat with the legacy FAILIFFixedThreshold path,
     # ignored by the observer-based FAILIF default.
     init_v_thr: float = 0.5
