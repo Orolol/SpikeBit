@@ -22,8 +22,8 @@ The run below uses chunks of 8 steps after the launch-overhead fixes (154 ms/ste
 uv run python scripts/train_stage_a.py \
   --init-checkpoint checkpoints/stage_a_init_phase35.pt \
   --out-dir checkpoints/stage_a_full_4b --metrics-path runs/stage_a_full_4b/metrics.jsonl \
-  --seq-len 64 --batch-size 8 --grad-accum 1 --total-steps 10000 --warmup-steps 500 \
-  --lr-embed-head 1e-4 --mixed-precision bf16 --lif-seq-chunk 8 \
+  --seq-len 64 --batch-size 32 --grad-accum 1 --total-steps 10000 --warmup-steps 300 \
+  --lr-embed-head 1e-3 --mixed-precision bf16 --lif-seq-chunk 8 \
   --log-every 50 --eval-every 500 --ckpt-every 1000
 ```
 
@@ -39,8 +39,8 @@ Logs: `runs/stage_a_full_4b/{pipeline.log,train.log,teacher_ppl.txt,eval.txt}`.
 Attempt 2 (`--lif-seq-chunk 8`, warmup 500, spec LRs, 0.18 s/step, GPU 82 %)
 reached train loss 14.5 / eval loss 15.5 at step 1000 — worse than uniform
 (ln 50277 = 10.8) — where the May runs were at 5.3. Killed at step 1100.
-Logs: `runs/stage_a_full_4b/aborted_chunk1/metrics_attempt2_fulleval.jsonl`
-(name is historical: it is the chunk-8 attempt).
+Logs: `runs/stage_a_full_4b/attempt2_chunk8/` (checkpoint moved to
+`checkpoints/stage_a_full_4b_attempt2/`).
 
 Short A/B series (300 steps, seed 0, 64×8, chunk 8 unless noted, 20k-example
 subset where noted — identical early trajectory to the full corpus),
@@ -69,5 +69,9 @@ slow). The lever is the LM-head/embedding learning rate: at the spec value
 fast enough (same mechanism as DECISIONS #9, where a frozen head gave a dead
 model). The May runs must have used a higher LR than the spec defaults; it
 was not recorded. Decision: full run uses `--lr-embed-head 1e-3`.
+
+Batch size (head LR 1e-3, 0 / 100 / 200): 64×8 53.6 / 7.7 / 6.5; 64×16 53.8 / 7.4 / 6.7;
+64×32 52.9 / 7.3 / 6.45. Step time is launch-bound and identical (0.17 s) up to
+batch 32 (GPU 88 %, peak 11.6 GB), so attempt 3 uses 64×32 (20 M tokens over 10 k steps).
 
 **Results (attempt 3).** _pending_
