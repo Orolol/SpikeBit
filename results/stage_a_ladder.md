@@ -128,6 +128,8 @@ commit `88b28dd`): seq 128 × batch 16, `--reset-state-every 1`.
 Train CE and protocol PPL now rank the LRs the same way, and every LR beats
 the best warm-trained model on the protocol (5.0–6.3 vs 8.9). The best LR
 sits on the edge of the grid, so 3e-3 is added (decided before its result).
-The ladder continues provisionally under this regime (DECISIONS #16,
-proposed): rung-1 seed 1 at the selected LR, then the rung-2 sweep with KL
-to the selected rung-1 seed-0 run, runs `runs/ladder/rung{1,2}c_*`.
+The ladder continues under this regime (DECISIONS #16, accepted the same
+evening; the runs started before sign-off count): rung-1 seed 1 at the
+selected LR, then the rung-2 sweep with KL to the selected rung-1 seed-0
+run, runs `runs/ladder/rung{1,2}c_*`. The warm-trained `rung1_lr*_s0` runs
+stay as the record of the flaw.

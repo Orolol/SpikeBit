@@ -872,11 +872,11 @@ gain over rung 3, the project's claim should be revised, not the metric.
 
 ---
 
-## Decision #16 — Ladder training regime: stateless windows matched to the eval (proposed 2026-10-28)
+## Decision #16 — Ladder training regime: stateless windows matched to the eval (2026-10-28)
 
-**Status:** proposed, awaiting Gaétan. Would amend the protocol of DEC-15
-(training part only; the eval protocol is unchanged). Ladder runs made under
-it before sign-off are provisional.
+**Status:** accepted by Gaétan on 2026-10-28. Amends the protocol of DEC-15
+(training part only; the eval protocol is unchanged). The ladder runs
+started under it before sign-off (`runs/ladder/rung{1,2}c_*`) count.
 
 **Why.** DEC-15 trains with the recurrent state carried across contiguous
 rows (64 × 32) and evaluates stateless per 128-token window. The rung-1 sweep
