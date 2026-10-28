@@ -121,6 +121,12 @@ class StageAArgs:
     # ~lr per step in log-scale units, i.e. ~1 % of scale per step at 1e-2:
     # fast enough to track the x2-6 range drift seen in the MinMax runs.
     lr_lsq: float = 1e-2
+    # Lay the training stream out so that batch row b at step n+1 continues
+    # row b at step n (DEC-2 streaming as intended). Off = the historical
+    # layout (consecutive chunks across the batch; the carried state then
+    # comes from an unrelated chunk). Kept off by default for comparability
+    # with the 2026-10-28 reference runs.
+    contiguous_rows: bool = False
 
 
 def make_param_groups(model: SpikingTernaryRWKV, args: StageAArgs) -> list[dict]:
@@ -294,6 +300,7 @@ def train(args: StageAArgs) -> int:
     train_loader, eval_loader = build_train_eval_loaders(
         corpus, seq_len=args.seq_len, batch_size=args.batch_size,
         eval_fraction=args.eval_fraction, shuffle_train=False,
+        contiguous_rows=args.contiguous_rows,
     )
 
     # --- Optimizer ---------------------------------------------------
@@ -372,8 +379,14 @@ def train(args: StageAArgs) -> int:
         micro += 1
 
         if micro % args.grad_accum == 0:
+            total_grad_norm = float("nan")
             if args.grad_clip > 0:
-                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=args.grad_clip)
+                total_grad_norm = float(
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=args.grad_clip)
+                )
+            # Per-parameter grad norms must be read before zero_grad (they were
+            # logged after it since May and always came out empty).
+            grad_norms = _grad_norms(model) if step % args.log_every == 0 else {}
             # LR schedule.
             mult = linear_warmup_cosine(
                 step, args.warmup_steps, args.total_steps, min_lr_frac=args.min_lr_frac
@@ -393,7 +406,8 @@ def train(args: StageAArgs) -> int:
                     "wall_s": time.time() - t0,
                     "spikes": dict(hook.stats),
                     "weight_dist": _weight_dists(model),
-                    "grad_norms": _grad_norms(model),
+                    "grad_norms": grad_norms,
+                    "grad_norm_total": total_grad_norm,
                 }
                 writer.log(step, **{k: v for k, v in metrics.items() if k != "step"})
                 # Pick out one representative spike rate per layer-type.
@@ -440,18 +454,23 @@ def evaluate(
     model.eval()
     total = 0
     total_loss = 0.0
-    model.detach_state()
+    # Stateless per window, like scripts/eval_teacher.py (the teacher sees
+    # each window from a fresh state), and no leakage of the training state
+    # into the eval nor of the eval state back into training (review
+    # 2026-10-28). Training resumes from a fresh state after an eval.
+    model.reset_state()
     for i, (x, y) in enumerate(loader):
         if max_batches > 0 and i >= max_batches:
             break
         x = x.to(device); y = y.to(device)
-        model.detach_state()
+        model.reset_state()
         logits = model(x)
         loss = F.cross_entropy(
             logits.reshape(-1, vocab_size), y.reshape(-1), reduction="sum"
         )
         total_loss += float(loss)
         total += y.numel()
+    model.reset_state()
     model.train()
     return total_loss / max(total, 1)
 

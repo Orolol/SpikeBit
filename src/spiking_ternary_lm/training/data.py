@@ -118,6 +118,7 @@ class PackedTokenDataset(IterableDataset):
         stride: int | None = None,
         shuffle_chunks: bool = False,
         seed: int = 0,
+        contiguous_rows_batch: int = 0,
     ) -> None:
         super().__init__()
         self.corpus = corpus
@@ -126,6 +127,11 @@ class PackedTokenDataset(IterableDataset):
         self.start_offset = int(start_offset)
         self.shuffle_chunks = bool(shuffle_chunks)
         self.seed = int(seed)
+        # > 0: emit chunks so that, batched by this size, row b of batch n+1
+        # is the text continuation of row b of batch n (B contiguous
+        # streams). 0: plain sequential order (row b of batch n+1 is B chunks
+        # further down the corpus, not a continuation).
+        self.contiguous_rows_batch = int(contiguous_rows_batch)
         if self.seq_len < 2:
             raise ValueError("seq_len must be >= 2")
 
@@ -142,6 +148,12 @@ class PackedTokenDataset(IterableDataset):
         if self.shuffle_chunks:
             rng = np.random.default_rng(self.seed)
             rng.shuffle(starts)
+        elif self.contiguous_rows_batch > 1:
+            B = self.contiguous_rows_batch
+            per_row = len(starts) // B
+            # Row b owns chunks [b*per_row, (b+1)*per_row); interleave so
+            # the DataLoader's batch n is (chunk n of row 0, ..., of row B-1).
+            starts = [starts[b * per_row + k] for k in range(per_row) for b in range(B)]
         for s in starts:
             window = ids[s : s + self.seq_len + 1].astype(np.int64)
             x = torch.from_numpy(window[:-1])
@@ -157,6 +169,7 @@ def build_train_eval_loaders(
     shuffle_train: bool = True,
     seed: int = 0,
     num_workers: int = 0,
+    contiguous_rows: bool = False,
 ) -> tuple[torch.utils.data.DataLoader, torch.utils.data.DataLoader]:
     """Split the packed corpus into a train and eval region by token offset.
 
@@ -175,7 +188,8 @@ def build_train_eval_loaders(
     )
 
     train_ds = PackedTokenDataset(
-        train_corpus, seq_len=seq_len, shuffle_chunks=shuffle_train, seed=seed
+        train_corpus, seq_len=seq_len, shuffle_chunks=shuffle_train, seed=seed,
+        contiguous_rows_batch=batch_size if (contiguous_rows and not shuffle_train) else 0,
     )
     eval_ds = PackedTokenDataset(eval_corpus, seq_len=seq_len, shuffle_chunks=False)
     train_loader = torch.utils.data.DataLoader(
