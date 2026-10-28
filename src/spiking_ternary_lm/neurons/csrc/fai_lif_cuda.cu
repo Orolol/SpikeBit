@@ -14,7 +14,8 @@
 //   beta       : (H,)        FP32, post-sigmoid (already in [0,1])
 //   gamma      : (H,)        FP32, post-sigmoid
 //   v0         : (B, H)      FP32
-//   scale, zp  : scalars     FP32 (one per tensor, derived from observer)
+//   scale, zp  : 0-dim FP32 device tensors (one per tensor, derived from
+//                the observer; read on-device so the host never syncs)
 //   qmin, qmax : ints
 //
 // Outputs:
@@ -54,8 +55,8 @@ __global__ void fai_lif_forward_kernel(
     const float* __restrict__ beta,      // (H,)
     const float* __restrict__ gamma,     // (H,)
     const float* __restrict__ v0,        // (B, H)
-    const float scale,
-    const float zp,
+    const float* __restrict__ scale_ptr,  // 0-dim device scalar
+    const float* __restrict__ zp_ptr,     // 0-dim device scalar
     const int qmin,
     const int qmax,
     float* __restrict__ spike_seq,       // (B, T, H)
@@ -66,6 +67,8 @@ __global__ void fai_lif_forward_kernel(
     const int b = idx / H;
     const int h = idx % H;
 
+    const float scale = *scale_ptr;
+    const float zp = *zp_ptr;
     const float beta_c  = beta[h];
     const float gamma_c = gamma[h];
     const float inv_scale = 1.0f / scale;
@@ -105,8 +108,8 @@ __global__ void fai_lif_backward_kernel(
     const float* __restrict__ beta,      // (H,)
     const float* __restrict__ gamma,     // (H,)
     const float* __restrict__ v0,        // (B, H)
-    const float scale,
-    const float zp,
+    const float* __restrict__ scale_ptr,  // 0-dim device scalar
+    const float* __restrict__ zp_ptr,     // 0-dim device scalar
     const int qmin,
     const int qmax,
     const float* __restrict__ gspike,    // (B, T, H)
@@ -120,6 +123,8 @@ __global__ void fai_lif_backward_kernel(
     const int b = idx / H;
     const int h = idx % H;
 
+    const float scale = *scale_ptr;
+    const float zp = *zp_ptr;
     const float beta_c  = beta[h];
     const float gamma_c = gamma[h];
     const float inv_scale = 1.0f / scale;
@@ -195,8 +200,8 @@ std::vector<torch::Tensor> fai_lif_forward_cuda(
     torch::Tensor beta,
     torch::Tensor gamma,
     torch::Tensor v0,
-    double scale,
-    double zp,
+    torch::Tensor scale,
+    torch::Tensor zp,
     int64_t qmin,
     int64_t qmax) {
     TORCH_CHECK(x.is_cuda(), "x must be CUDA");
@@ -206,6 +211,10 @@ std::vector<torch::Tensor> fai_lif_forward_cuda(
     TORCH_CHECK(gamma.dtype() == torch::kFloat32 && gamma.is_contiguous(), "gamma must be contiguous FP32");
     TORCH_CHECK(v0.dtype() == torch::kFloat32 && v0.is_contiguous(), "v0 must be contiguous FP32");
     TORCH_CHECK(x.dim() == 3, "x must be 3D (B, T, H)");
+    TORCH_CHECK(scale.is_cuda() && scale.dtype() == torch::kFloat32 && scale.numel() == 1,
+                "scale must be a 1-element CUDA FP32 tensor");
+    TORCH_CHECK(zp.is_cuda() && zp.dtype() == torch::kFloat32 && zp.numel() == 1,
+                "zp must be a 1-element CUDA FP32 tensor");
 
     const int B = x.size(0);
     const int T = x.size(1);
@@ -228,7 +237,7 @@ std::vector<torch::Tensor> fai_lif_forward_cuda(
         beta.data_ptr<float>(),
         gamma.data_ptr<float>(),
         v0.data_ptr<float>(),
-        (float)scale, (float)zp,
+        scale.data_ptr<float>(), zp.data_ptr<float>(),
         (int)qmin, (int)qmax,
         spike_seq.data_ptr<float>(),
         v_pre_seq.data_ptr<float>(),
@@ -241,8 +250,8 @@ std::vector<torch::Tensor> fai_lif_backward_cuda(
     torch::Tensor beta,
     torch::Tensor gamma,
     torch::Tensor v0,
-    double scale,
-    double zp,
+    torch::Tensor scale,
+    torch::Tensor zp,
     int64_t qmin,
     int64_t qmax,
     torch::Tensor gspike,
@@ -251,6 +260,8 @@ std::vector<torch::Tensor> fai_lif_backward_cuda(
                 "x must be contiguous CUDA FP32");
     TORCH_CHECK(beta.is_contiguous() && gamma.is_contiguous() && v0.is_contiguous(),
                 "beta/gamma/v0 must be contiguous");
+    TORCH_CHECK(scale.is_cuda() && scale.numel() == 1 && zp.is_cuda() && zp.numel() == 1,
+                "scale/zp must be 1-element CUDA tensors");
 
     const int B = x.size(0);
     const int T = x.size(1);
@@ -271,7 +282,7 @@ std::vector<torch::Tensor> fai_lif_backward_cuda(
         beta.data_ptr<float>(),
         gamma.data_ptr<float>(),
         v0.data_ptr<float>(),
-        (float)scale, (float)zp,
+        scale.data_ptr<float>(), zp.data_ptr<float>(),
         (int)qmin, (int)qmax,
         gspike.contiguous().data_ptr<float>(),
         gv_final.contiguous().data_ptr<float>(),

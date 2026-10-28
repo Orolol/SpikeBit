@@ -150,6 +150,9 @@ class _SpikeStatsHook:
 
     def __init__(self, model: nn.Module):
         self.stats: dict[str, dict[str, float]] = {}
+        # Each hook costs 3 device->host syncs; 60 LIFs x 3 per step
+        # starves the GPU. The trainer flips this on for logged steps only.
+        self.enabled = True
         self.handles: list[torch.utils.hooks.RemovableHandle] = []
         for name, m in model.named_modules():
             if isinstance(m, FAILIF):
@@ -159,6 +162,8 @@ class _SpikeStatsHook:
         n_max = lif.n_max
 
         def hook(_module, _inputs, output):
+            if not self.enabled:
+                return
             with torch.no_grad():
                 out = output.detach()
                 self.stats[name] = {
@@ -253,7 +258,9 @@ def train(args: StageAArgs) -> int:
     for g in groups:
         LOG.info("  group %-16s | %d params | lr %.2e",
                  g["name"], sum(p.numel() for p in g["params"]), g["lr"])
-    optimizer = torch.optim.AdamW(groups, weight_decay=args.weight_decay)
+    optimizer = torch.optim.AdamW(
+        groups, weight_decay=args.weight_decay, fused=(device.type == "cuda")
+    )
 
     # --- Mixed-precision policy (DECISIONS.md #13) -------------------
     mp_map = {"none": None, "bf16": torch.bfloat16}
@@ -296,6 +303,7 @@ def train(args: StageAArgs) -> int:
         x = x.to(device, non_blocking=True)
         y = y.to(device, non_blocking=True)
         model.detach_state()  # bound BPTT memory between training windows
+        hook.enabled = step % args.log_every == 0
         # Autocast wraps ONLY the forward + loss. backward inherits the
         # dtype graph automatically and gradients accumulate into FP32
         # leaf .grad buffers; the optimizer.step() runs outside the

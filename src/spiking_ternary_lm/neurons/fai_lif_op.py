@@ -129,6 +129,9 @@ class _FAILIFFunction(torch.autograd.Function):
         x: Tensor, beta: Tensor, gamma: Tensor, v0: Tensor,
         scale: Tensor, zp: Tensor, qmin: int, qmax: int,
     ) -> tuple[Tensor, Tensor, Tensor]:
+        # Undefined output grads arrive as ``None`` instead of zero
+        # tensors, so backward can test them without a device sync.
+        ctx.set_materialize_grads(False)
         ext = _load_extension()
         if ext is None or not x.is_cuda:
             spike, v_pre, v_final = _fai_lif_python(
@@ -146,14 +149,14 @@ class _FAILIFFunction(torch.autograd.Function):
         beta_c = beta.contiguous()
         gamma_c = gamma.contiguous()
         v0_c = v0.contiguous()
-        scale_f = float(scale.item()) if isinstance(scale, Tensor) else float(scale)
-        zp_f = float(zp.item()) if isinstance(zp, Tensor) else float(zp)
+        # (scale, zp) stay on-device as 0-dim FP32 tensors: the kernel
+        # dereferences them itself, so no ``.item()`` host sync per call.
+        scale_t = torch.as_tensor(scale, dtype=torch.float32, device=x.device).reshape(())
+        zp_t = torch.as_tensor(zp, dtype=torch.float32, device=x.device).reshape(())
         spike, v_pre, v_final = ext.forward(
-            x_c, beta_c, gamma_c, v0_c, scale_f, zp_f, int(qmin), int(qmax)
+            x_c, beta_c, gamma_c, v0_c, scale_t, zp_t, int(qmin), int(qmax)
         )
-        ctx.save_for_backward(x_c, beta_c, gamma_c, v0_c)
-        ctx._scale = scale_f
-        ctx._zp = zp_f
+        ctx.save_for_backward(x_c, beta_c, gamma_c, v0_c, scale_t, zp_t)
         ctx._qmin = int(qmin)
         ctx._qmax = int(qmax)
         ctx._use_cuda = True
@@ -164,7 +167,10 @@ class _FAILIFFunction(torch.autograd.Function):
         ctx: Any,
         gspike: Tensor, gv_pre: Tensor, gv_final: Tensor,
     ) -> tuple[Tensor | None, ...]:
-        x, beta, gamma, v0 = ctx.saved_tensors
+        if getattr(ctx, "_use_cuda", False):
+            x, beta, gamma, v0, scale_t, zp_t = ctx.saved_tensors
+        else:
+            x, beta, gamma, v0 = ctx.saved_tensors
         B, T, H = x.shape
 
         # gv_pre is the gradient flowing back through the v_pre_seq output.
@@ -174,9 +180,13 @@ class _FAILIFFunction(torch.autograd.Function):
         # If a downstream consumer ever does take a real grad through v_pre,
         # we'd need to fold it into gspike (since spike = v_pre + (q-v_pre).detach()
         # has identity STE on v_pre, so adding gspike + gv_pre would do it).
-        # Belt-and-braces: if gv_pre is non-trivial, treat it as additional
+        # Belt-and-braces: if gv_pre is defined, treat it as additional
         # gspike-equivalent gradient (works because of the identity STE).
-        if gv_pre is not None and gv_pre.abs().sum() > 0:
+        # With materialize_grads off an unused output arrives as ``None``,
+        # so this is a host-side check, not a ``.sum() > 0`` device sync.
+        if gspike is None:
+            gspike = torch.zeros_like(x)
+        if gv_pre is not None:
             gspike = gspike + gv_pre
 
         if gv_final is None:
@@ -194,7 +204,7 @@ class _FAILIFFunction(torch.autograd.Function):
         ext = _load_extension()
         gx, gbeta, ggamma, gv0 = ext.backward(
             x, beta, gamma, v0,
-            ctx._scale, ctx._zp, ctx._qmin, ctx._qmax,
+            scale_t, zp_t, ctx._qmin, ctx._qmax,
             gspike, gv_final,
         )
         # No grads for scale, zp, qmin, qmax.

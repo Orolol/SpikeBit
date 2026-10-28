@@ -130,21 +130,33 @@ class MovingAverageMinMaxObserver(nn.Module):
             dtype=self.running_max.dtype, device=self.running_max.device
         )
 
-        m = self.momentum
-        # First-call init: take the very first step exactly, then EMA-blend.
-        t0 = 0
-        if int(self.num_updates) == 0:
-            self.running_min.copy_(mins[0])
-            self.running_max.copy_(maxes[0])
-            self.num_updates += 1
-            t0 = 1
+        # Closed form of T sequential EMA steps, evaluated as one dot
+        # product instead of 2T scalar kernels (launch-bound otherwise):
+        #   new = (1-m)^T * old + sum_t m (1-m)^(T-1-t) x_t
+        # The first-call init (take x_0 exactly, then EMA over t >= 1)
+        # collapses to the same expression with ``old := x_0``, so the
+        # branch is a device-side ``where`` -- no host sync on
+        # ``num_updates``.
+        decay, weights = self._sequence_weights(T, mins)
+        is_first = self.num_updates == 0
+        old_min = torch.where(is_first, mins[0], self.running_min)
+        old_max = torch.where(is_first, maxes[0], self.running_max)
+        self.running_min.copy_(decay * old_min + torch.dot(weights, mins))
+        self.running_max.copy_(decay * old_max + torch.dot(weights, maxes))
+        self.num_updates += T
 
-        # Tight Python loop of scalar EMA ops on the existing buffers.
-        for t in range(t0, T):
-            self.running_min.mul_(1 - m).add_(mins[t], alpha=m)
-            self.running_max.mul_(1 - m).add_(maxes[t], alpha=m)
-        if T > t0:
-            self.num_updates += (T - t0)
+    def _sequence_weights(self, T: int, like: Tensor) -> tuple[Tensor, Tensor]:
+        """``((1-m)^T, [m (1-m)^(T-1-t)]_t)`` cached per (T, device, dtype)."""
+        key = (T, like.device, like.dtype)
+        cached = getattr(self, "_seq_weights_cache", None)
+        if cached is None or cached[0] != key:
+            m = self.momentum
+            exps = torch.arange(T - 1, -1, -1, device=like.device, dtype=torch.float64)
+            weights = (m * (1.0 - m) ** exps).to(like.dtype)
+            decay = torch.tensor((1.0 - m) ** T, device=like.device, dtype=like.dtype)
+            cached = (key, decay, weights)
+            self._seq_weights_cache = cached
+        return cached[1], cached[2]
 
     def get_scale_and_zero_point(self) -> tuple[Tensor, Tensor]:
         """Return ``(scale, zero_point)`` from current running stats.
