@@ -139,3 +139,29 @@ selected LR is **1e-3**. Seed 0 (`rung1c_lr1e-3_s0`): PPL 5.005; seed 1
 (`rung1c_lr1e-3_s1`, disjoint text): PPL 4.967. **Reference = 4.986**
 (mean of the two seeds), seed spread 0.8 %, so the noise rule is set by its
 5 % floor. KL teacher for rungs ≥ 2: `checkpoints/ladder/rung1c_lr1e-3_s0/final.pt`.
+
+## Rung 2 — results (2026-10-28, 18:53–19:43)
+
+Runs `runs/ladder/rung2c_lr{LR}_s{seed}`: `--weight-quant ternary --act-quant
+none --ffn-relu-sq`, KL to rung 1 seed 0, regime of DECISIONS #16.
+"Ternary" covers the 84 BitLinear projections (92.0 M parameters); the
+embedding and LM head (77.2 M) and the norms stay FP, as in DEC-2.
+
+| LR | train CE, steps 9 000–9 999 | PPL (protocol) | ratio to rung 1 (4.986) |
+|---|---|---|---|
+| 1e-4 | 1.869 | 6.436 | 1.29 |
+| 3e-4 | 1.747 | 5.721 | 1.15 |
+| 1e-3 | 1.669 | 5.315 | 1.07 |
+| 3e-3 | **1.653** | 5.222 | 1.05 |
+| 3e-3, seed 1 | 1.620 | 5.093 | 1.02 |
+
+KL to the rung-1 teacher: 6.12 nats at step 0, 0.09–0.10 at the end.
+3e-3 is on the edge of the grid, so 1e-2 is added (DECISIONS #16 rule) before
+rung 2 is closed; the seed-1 run at 3e-3 above came from the queue and
+counts only if 3e-3 stays selected.
+
+**Eval check** (suspicious-result rule): on `rung2c_lr3e-3_s0/final.pt` the
+config says `weight_quant="ternary"`, all 84 BitLinear have `quantize=True`,
+each group has a single non-zero magnitude (ternary, 31.7 % zeros), the
+forward equals `x @ quantized_weight().T`, and the protocol PPL is 5.222 with
+the ternary weights vs 38.7 with the FP shadow weights swapped in.
