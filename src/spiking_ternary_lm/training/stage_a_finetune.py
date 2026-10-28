@@ -91,6 +91,11 @@ class StageAArgs:
     # ``observer_momentum ≈ 1 - (1 - m_step)^T`` (e.g. 0.47 for T=64,
     # m_step=0.01).
     observer_momentum: float = -1.0
+    # Override ``FAILIF.seq_chunk_size`` on every LIF: the fused kernel
+    # freezes (scale, zp) for one call, so ``1`` reproduces the per-step
+    # Python reference (best PPL, ~2x slower), ``0`` calls once per
+    # sequence (fastest, stalest grid). ``-1`` keeps the module default.
+    lif_seq_chunk: int = -1
 
 
 def make_param_groups(model: SpikingTernaryRWKV, args: StageAArgs) -> list[dict]:
@@ -222,6 +227,13 @@ def train(args: StageAArgs) -> int:
     missing, unexpected = model.load_state_dict(ckpt["model"], strict=False)
     if missing or unexpected:
         LOG.warning("state_dict gaps: missing=%d unexpected=%d", len(missing), len(unexpected))
+    if args.lif_seq_chunk >= 0:
+        n_lif = 0
+        for m in model.modules():
+            if isinstance(m, FAILIF):
+                m.seq_chunk_size = int(args.lif_seq_chunk)
+                n_lif += 1
+        LOG.info("lif_seq_chunk=%d applied to %d FAILIF modules", args.lif_seq_chunk, n_lif)
     model.to(device)
     LOG.info("model: %d trainable params (%.1f M)", model.num_parameters(), model.num_parameters() / 1e6)
 
