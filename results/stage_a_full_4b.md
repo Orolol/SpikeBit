@@ -144,3 +144,14 @@ teacher's function is already lost at step 0 (loss 45–53 > uniform 10.8).
 Changing the quantizer treats the symptom. The reset bug (`s·q` instead of
 `s·(q − zp)`) was real and is fixed, but it was not what limited the
 per-tensor runs.
+
+**Correction (same evening, DECISIONS #15 amended).** Attempt 3 ran at commit
+`1d47059`, before the reset fix (`1b0034b`): its blow-up mixes the `s·zp`
+offset bug with integrator windup on clipped values, so it does not test LSQ
+with a dequantized output on the corrected neuron. For
+`stage_a_fixreset_tensor_1500`, the eval PPLs are inside the noise band, but
+the paired train loss (same data order and seed as `stage_a_repro_may_1500`)
+is worse in 28 of 30 logged points: +0.13 nats over steps 500–1 000, +0.23
+over 1 000–1 500. One seed, not conclusive, but not "no change". No run has
+gone past 1 500 steps since the fix, so its effect on the ~2 k-step
+divergence is unknown.

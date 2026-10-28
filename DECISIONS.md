@@ -748,7 +748,9 @@ No further Stage A budget on the MinMax path.
 ## Decision #15 — Stage A redesigned as a faithful conversion (proposed 2026-10-28)
 
 **Status:** proposed, awaiting Gaétan. Supersedes DEC-14's "LSQ next" and
-the Stage A gate of DEC-1 once accepted.
+the Stage A gate of DEC-1 once accepted. Amended the same evening after a
+third review: points 3 and 6 corrected against the data, protocol,
+thresholds and a fallback for rung 2 added, rung 4 split in two.
 
 **Why.** Two independent reviews (Opus, Astra) and the day's experiments agree
 on the root cause: Stage A is not a conversion of the teacher but a
@@ -762,8 +764,17 @@ re-training of a different network from a scrambled init.
      quantizer; channel-mix `lif_k` fires at 0.55 with 0 % dead where the
      teacher zeroes about half), and `lif_out` is unsigned on a signed value.
   3. With T = 1 the LIF is a quantizer plus a per-channel error-feedback
-     recurrence (leak β) the teacher does not have; its membrane carries a
-     ×1/(1−β) gain, which is why the dequantized-output LSQ attempt exploded.
+     recurrence (leak β) the teacher does not have. With the corrected reset
+     (point 6) the membrane only carries the rounding residual (|V| ≤ s/2)
+     while the input stays inside the grid, and the dequantized output tracks
+     the input with no gain. The ×1/(1−β) gain applies to the *clipped*
+     excess only: integrator windup, a saturated neuron stays saturated.
+     CPU check (`FAILIF(1)`, 4 bits unsigned, grid fixed to [−1, 1], eval
+     mode, β = 0.9): constant input 0.37 → mean output 0.371, |V| ≤ 0.064;
+     constant 1.5 → V winds up to 4.31 = 0.433 / (1 − β). The
+     dequantized-output LSQ attempt ran at commit `1d47059`, *before* the
+     reset fix, so its blow-up mixes the `s·zp` offset bug with windup; LSQ
+     with a dequantized output is untested on the corrected neuron.
   4. The reference is miscalibrated: teacher not fine-tuned on TinyStories,
      no KL distillation, and "≥ 95 % of teacher PPL" is unrealistic for
      ternary weights at 169 M / 20 M tokens.
@@ -774,37 +785,86 @@ re-training of a different network from a scrambled init.
      measured yet.
   6. A real bug: the soft reset subtracted `s·q` instead of `s·(q − zp)`,
      leaving a `s·zp` membrane offset per step. Fixed (CUDA fwd/bwd, Python,
-     per-step path) with an invariant test; at per-tensor scope it did not
-     change the 1 500-step PPL beyond noise (415 vs 309).
+     per-step path) with an invariant test. At per-tensor scope it did not
+     help at 1 500 steps: eval PPL 415 vs 309 (single evals, inside the
+     ±30 % band), but the paired train loss (same data order and seed as
+     `stage_a_repro_may_1500`, train loss at the common logged steps of both
+     `metrics.jsonl`) is worse in 28 of 30 points, by +0.13 nats over steps
+     500–1 000 and +0.23 over 1 000–1 500. One seed, so not conclusive, but
+     not "no change". Whether the fix removes the ~2 k-step divergence of
+     DEC-14 was not tested (no run past 1 500 steps since the fix); that
+     question is moot under the redesign below.
 
 Quantizer variants tried on top of the current design all failed (see
 `results/stage_a_full_4b.md`): LSQ with integer output cannot learn out of
-saturation, LSQ with dequantized output blows up through the leak gain,
-per-channel grids are an affine distortion the teacher's downstream weights
-cannot absorb (and are not foldable into ternary weights anyway).
+saturation; LSQ with dequantized output blew up (before the reset fix, see
+point 3); per-channel grids, with the raw integer output, are an affine
+distortion the teacher's downstream weights cannot absorb (and a
+per-input-channel scale does not fold into row-group ternary scales anyway).
 
-**Decision (proposed).** Rebuild Stage A as a measured ladder, each rung on
-the same eval (full tail, stateless per window, contiguous rows), each with
-its pre-registered threshold before launch:
+**Decision (proposed).** Rebuild Stage A as a measured ladder. Every number
+below is a proposal to confirm before the first launch; once accepted it is
+pre-registered and not changed after seeing results.
 
-  0. Teacher fine-tuned on TinyStories with the same budget → the reference.
-  1. Student with *no* quantization must reproduce rung 0: fold scale and
-     zero-point into the next BitLinear (per-tensor scalar → group scales,
-     zp → bias), keep `relu²` before an unsigned LIF, signed `lif_out`,
-     stateless LIF (β = 0). Gate: PPL within noise of rung 0.
-  2. Ternary weights only (activations FP).
-  3. 8-bit, then 4-bit activations (MinMax per-tensor as the baseline).
-  4. Only now: β > 0 (the spiking reading) as an ablation against rung 3,
-     plus an energy proxy (spike count × add cost vs MACs), since the
-     hardware argument is otherwise unsupported.
-  5. KL distillation from the teacher's logits as the training loss at
-     every rung ≥ 2; LSQ vs MinMax compared only at rung 3, same output
-     convention.
+**Protocol (all rungs).**
 
-Everything below rung 1 is diagnostics-only until rung 1 passes. No further
-Stage A budget on the current design.
+  * Eval: the eval tail (last 1 % of the packed corpus), seq 128, stateless
+    per window (state reset before every window, as `eval_teacher.py`
+    does), first 1 M tokens of the tail. The 20 k-token `evaluate.py`
+    default is too small to separate rungs. The teacher's 13.34 is
+    re-measured on this protocol.
+  * Training: 20 M tokens per trained rung (10 k steps at 64 × 32, about
+    30 min at 0.17 s/step), contiguous rows, seeds 0 and 1. A difference
+    between two rungs counts only if it exceeds max(2 × the seed spread,
+    5 % PPL).
+  * Loss: CE at rung 1; CE + KL to the logits of rung 1 seed 0 from rung 2
+    on (the in-domain teacher, not the zero-shot one).
+
+**Ladder.**
+
+  0. Equivalence (no training, runs first). With quantization off (FP
+     weights, LIF = identity, `relu²` restored), the converted student *is*
+     the teacher: logits allclose to the HF teacher in FP32 (rtol = atol =
+     1e-3) on a few eval windows, and PPL equal to the teacher's within
+     0.1 %. Second test, quantization on: the folded integer path (scale into
+     the consumer BitLinear's group scales, zp → bias) gives the same output
+     as the dequantized path `s·(q − zp)`. Folding applies only where the
+     consumer is a BitLinear (`lif_out` → `W_o`, channel-mix `lif_k` →
+     `W_v`); time-mix `k` and `v` (into the WKV, `exp(k)` does not fold)
+     and channel-mix `v` (into the FP gate) are dequantized explicitly.
+     Grids: signed symmetric where the teacher's activation is signed (`k`,
+     `v`, `lif_out` input), unsigned after `relu²` (zp = 0 by construction).
+     LIF stateless (β = 0) up to rung 4b.
+  1. Reference: the rung-0 student in FP mode, fine-tuned on TinyStories
+     with the protocol budget. Its PPL (mean of two seeds) is the
+     denominator of every ratio below; the zero-shot 13.34 stays as a
+     secondary reference.
+  2. Ternary weights, FP activations. PPL ratio to rung 1: ≤ 1.5 →
+     continue; 1.5–2 → continue to rung 3 and start plan B in parallel;
+     > 2 → plan B before rung 3. Plan B, in order: (a) progressive
+     ternarization (`w + λ·(Q(w) − w)`, λ ramped 0 → 1 over the first 30 %
+     of steps); (b) one run at 2 × the budget, to tell budget-limited from
+     capacity-limited; (c) fall back to 2- or 4-bit weights (NSLLM's
+     setting) and record the downgrade of the project's claim.
+  3. Activations on top of rung 2: 8-bit, then 4-bit, MinMax per-tensor as
+     the baseline. Ratio to rung 2: 8-bit ≤ 1.1, 4-bit ≤ 1.3. The `relu²`
+     output is heavy-tailed; an 8-bit grid at that site only is a
+     pre-registered variant (BitNet a4.8 keeps its FFN intermediate at
+     8 bits), reported separately from the all-4-bit result. LSQ vs MinMax
+     is compared here only, both with the dequantized/folded convention.
+  4. Two separate questions, both against rung 3:
+     a. Spike reading. The binary decomposition over T virtual timesteps is
+        exact by construction for BitLinear consumers (checked by a test);
+        `exp(k)` in the WKV needs the count decoded, so that path is not
+        spike-native and is reported as such. Energy proxy: spike count ×
+        add cost vs the MACs of the INT4 baseline.
+     b. Membrane memory: β > 0 with anti-windup (membrane clamped to
+        ±s/2), kept only if it beats rung 3 by more than the noise rule.
+
+Rungs 1–4 are not launched until rung 0 passes. No further Stage A budget
+on the current design.
 
 **Positioning note.** 4-bit activations with ternary weights exist (BitNet
-a4.8); SpikeBit's contribution has to be the spiking/recurrent reading (rung
-4) or the hardware path. If rung 4 shows no gain over rung 3, the project's
-claim should be revised, not the metric.
+a4.8); SpikeBit's contribution has to be the spiking/recurrent reading
+(rung 4) or the hardware path. If 4a shows no energy advantage and 4b no
+gain over rung 3, the project's claim should be revised, not the metric.
