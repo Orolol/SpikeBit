@@ -266,8 +266,9 @@ class FAILIF(nn.Module):
         # (``scale * (q - zp)`` with an identity STE w.r.t. the membrane;
         # DECISIONS #15). LSQ always outputs the dequantized value.
         self.output_mode = "int"
-        # Dequant output only: zero the STE gradient where the membrane is
-        # clipped by the grid (DEC-4's unmasked STE otherwise).
+        # Dequantized outputs (MinMax "dequant" and LSQ): zero the STE
+        # gradient where the membrane is clipped by the grid (DEC-17;
+        # DEC-4's unmasked STE otherwise).
         self.ste_clip = False
         # True ⇒ beta = 0: no membrane carried across tokens, the LIF is a
         # plain quantizer (DECISIONS #15 rungs 0-3).
@@ -336,6 +337,8 @@ class FAILIF(nn.Module):
         self.lsq_init_steps = int(init_steps)
         self.lsq_log_scale = nn.Parameter(torch.tensor(0.0, dtype=torch.float32))
         self.lsq_zp = nn.Parameter(torch.tensor(0.0, dtype=torch.float32))
+        # Symmetric grids keep zp = 0 (DECISIONS #15): the offset is not learnt.
+        self.lsq_zp.requires_grad_(not self.observer.symmetric)
         self.register_buffer("lsq_initialized", torch.tensor(0, dtype=torch.long))
         self.register_buffer("lsq_seen", torch.tensor(0, dtype=torch.long), persistent=False)
 
@@ -571,6 +574,7 @@ class FAILIF(nn.Module):
                 self.gamma.to(torch.float32).contiguous(),
                 self.v.to(torch.float32),
                 self.lsq_log_scale, self.lsq_zp, self.observer.qmin, self.observer.qmax,
+                self.ste_clip,
             )
             self.v = v_final.detach()
             # Integer spikes kept for the spike-stats hooks (the module
@@ -689,9 +693,18 @@ def calibrate_observers(model: nn.Module, batches: Iterable[Tensor]) -> int:
     RWKV-4 vs 2.8 % calibrated). Only meaningful with dequantized outputs,
     where the FP pass sees the scales the quantized model will see (with the
     legacy integer outputs it inflates the deep ranges, DECISIONS #11).
-    Per-tensor observers only. Returns the number of observers set.
+    LSQ LIFs not initialised yet get their step and offset from the
+    calibrated range. Per-tensor observers only. Returns the number of
+    observers set.
     """
-    lifs = [m for m in model.modules() if isinstance(m, FAILIF) and m.act_quant == "minmax"]
+    lifs = [
+        m for m in model.modules()
+        if isinstance(m, FAILIF) and (
+            m.act_quant == "minmax"
+            or (m.act_quant == "lsq" and int(m.lsq_initialized) == 0)
+        )
+    ]
+    modes = {id(m): m.act_quant for m in lifs}
     if any(m.observer.per_channel for m in lifs):
         raise ValueError("calibrate_observers supports per-tensor observers only")
     lo: dict[int, Tensor] = {}
@@ -716,7 +729,7 @@ def calibrate_observers(model: nn.Module, batches: Iterable[Tensor]) -> int:
         for h in handles:
             h.remove()
         for m in lifs:
-            m.act_quant = "minmax"
+            m.act_quant = modes[id(m)]
         model.reset_state()
         model.train(was_training)
     for m in lifs:
@@ -724,6 +737,8 @@ def calibrate_observers(model: nn.Module, batches: Iterable[Tensor]) -> int:
         obs.running_min.copy_(lo[id(m)])
         obs.running_max.copy_(hi[id(m)])
         obs.num_updates.fill_(1)
+        if m.act_quant == "lsq":
+            m._lsq_init_from_observer()
     return len(lifs)
 
 

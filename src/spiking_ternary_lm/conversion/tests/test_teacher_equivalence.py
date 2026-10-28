@@ -76,7 +76,10 @@ def test_faithful_8bit_activations_stay_close_to_teacher():
         student.eval(); student.reset_state()
         return float((student(ids) - ref).norm() / ref.norm())
 
-    faithful = run(ffn_relu_sq=True, act_grid="faithful", act_output="dequant", lif_stateless=True)
+    faithful_cfg = dict(ffn_relu_sq=True, act_grid="faithful", act_output="dequant", lif_stateless=True)
+    faithful = run(**faithful_cfg)
     legacy = run()
     assert faithful < 0.05
     assert legacy > 10 * faithful
+    # LSQ starts from the same calibrated grid as MinMax.
+    assert abs(run(**faithful_cfg, act_quant="lsq") - faithful) < 1e-3

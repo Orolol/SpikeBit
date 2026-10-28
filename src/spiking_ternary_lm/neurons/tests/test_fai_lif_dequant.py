@@ -40,7 +40,8 @@ def test_symmetric_dequant_tracks_input_with_unit_gradient(device, signed):
 
 
 @pytest.mark.parametrize("device", ["cpu", pytest.param("cuda", marks=CUDA)])
-def test_lsq_input_gradient_is_straight_through(device):
+@pytest.mark.parametrize("ste_clip", [False, True])
+def test_lsq_input_gradient_is_straight_through(device, ste_clip):
     g = torch.Generator().manual_seed(1)
     x = (torch.randn(2, 6, 16, generator=g) * 0.5).to(device).requires_grad_(True)
     beta = torch.zeros(16, device=device)
@@ -48,10 +49,24 @@ def test_lsq_input_gradient_is_straight_through(device):
     v0 = torch.zeros(2, 16, device=device)
     log_s = torch.tensor(-2.0, device=device, requires_grad=True)
     zp = torch.tensor(3.0, device=device, requires_grad=True)
-    x_hat, *_ = lsq_fai_lif_apply(x, beta, gamma, v0, log_s, zp, 0, 15)
+    x_hat, *_ = lsq_fai_lif_apply(x, beta, gamma, v0, log_s, zp, 0, 15, ste_clip)
     g_out = torch.randn(x_hat.shape, generator=g).to(device)
     (x_hat * g_out).sum().backward()
-    assert torch.allclose(x.grad, g_out, atol=1e-6)
+    u = x.detach() / torch.exp(log_s.detach()) + zp.detach()
+    inside = (u >= -0.5) & (u <= 15.5)
+    assert 0 < int(inside.sum()) < inside.numel()
+    expected = g_out * inside if ste_clip else g_out
+    assert torch.allclose(x.grad, expected, atol=1e-6)
+    assert log_s.grad is not None and float(log_s.grad) != 0.0
+
+
+def test_lsq_keeps_zero_point_fixed_on_symmetric_grids():
+    lif = FAILIF(16, num_bits=4, signed=True, symmetric=True)
+    lif.enable_lsq()
+    assert not lif.lsq_zp.requires_grad and lif.lsq_log_scale.requires_grad
+    lif = FAILIF(16, num_bits=4, signed=False)
+    lif.enable_lsq()
+    assert lif.lsq_zp.requires_grad
 
 
 @pytest.mark.parametrize("device", ["cpu", pytest.param("cuda", marks=CUDA)])

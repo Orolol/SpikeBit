@@ -279,7 +279,8 @@ def fai_lif_apply(
 #     dx_hat/ds  = round(u) - u      inside the range
 #                = q - zp            where clipped (upper: qmax - zp, ...)
 #     dx_hat/dzp = 0 inside, -s where clipped
-#     dx_hat/dv  = 1 (identity STE; DEC-4: not masked outside the range)
+#     dx_hat/dv  = 1 (identity STE; DEC-4: not masked outside the range),
+#                  or 0 where clipped with ``ste_clip`` (DEC-17)
 #
 # i.e. saturated elements push the step up, which an integer-only output
 # cannot express (that variant saturated and diverged: runs/stage_a_lsq_1500/
@@ -297,7 +298,7 @@ class _LSQFAILIFFunction(torch.autograd.Function):
     def forward(
         ctx: Any,
         x: Tensor, beta: Tensor, gamma: Tensor, v0: Tensor,
-        log_scale: Tensor, zp: Tensor, qmin: int, qmax: int,
+        log_scale: Tensor, zp: Tensor, qmin: int, qmax: int, ste_clip: bool = False,
     ) -> tuple[Tensor, Tensor, Tensor, Tensor]:
         ctx.set_materialize_grads(False)
         s32 = log_scale.detach().to(torch.float32).reshape(()).exp()
@@ -322,6 +323,7 @@ class _LSQFAILIFFunction(torch.autograd.Function):
         ctx._qmin = int(qmin)
         ctx._qmax = int(qmax)
         ctx._use_cuda = use_cuda
+        ctx._ste_clip = bool(ste_clip)
         return x_hat, spike, v_pre, v_final
 
     @staticmethod
@@ -353,6 +355,8 @@ class _LSQFAILIFFunction(torch.autograd.Function):
         # gx_hat * s, i.e. off by the step size; review 2026-10-28). Plus any
         # direct grad on the integer output (normally None).
         gspike = gx_hat.clone()
+        if ctx._ste_clip:
+            gspike = gspike * ((u >= qmin - 0.5) & (u <= qmax + 0.5)).to(torch.float32)
         if gspike_int is not None:
             gspike = gspike + gspike_int.to(torch.float32)
         if gv_pre is not None:
@@ -368,12 +372,12 @@ class _LSQFAILIFFunction(torch.autograd.Function):
             gx, gbeta, ggamma, gv0, *_ = _backward_python(
                 x, beta, gamma, v0, float(s32), float(zp32), qmin, qmax, gspike, gv_final,
             )
-        return gx, gbeta, ggamma, gv0, glog.reshape(()), gzp.reshape(()), None, None
+        return gx, gbeta, ggamma, gv0, glog.reshape(()), gzp.reshape(()), None, None, None
 
 
 def lsq_fai_lif_apply(
     x: Tensor, beta: Tensor, gamma: Tensor, v0: Tensor,
-    log_scale: Tensor, zp: Tensor, qmin: int, qmax: int,
+    log_scale: Tensor, zp: Tensor, qmin: int, qmax: int, ste_clip: bool = False,
 ) -> tuple[Tensor, Tensor, Tensor, Tensor]:
     """Fused FAI-LIF sequence forward with an LSQ-learnable grid.
 
@@ -381,6 +385,7 @@ def lsq_fai_lif_apply(
     ``q = clip(round(v_pre / s + zp))``). Returns ``(x_hat, spike_seq,
     v_pre_seq, v_final)`` with ``x_hat = s * (spike - zp)`` the dequantized
     output; gradients flow to ``x``, ``beta``, ``gamma``, ``v0``,
-    ``log_scale`` and ``zp``.
+    ``log_scale`` and ``zp``. ``ste_clip`` zeroes the membrane gradient where
+    ``q`` is clipped (DEC-17).
     """
-    return _LSQFAILIFFunction.apply(x, beta, gamma, v0, log_scale, zp, qmin, qmax)
+    return _LSQFAILIFFunction.apply(x, beta, gamma, v0, log_scale, zp, qmin, qmax, ste_clip)
