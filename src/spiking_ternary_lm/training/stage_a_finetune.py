@@ -192,6 +192,8 @@ class _SpikeStatsHook:
                 return
             with torch.no_grad():
                 out = output.detach()
+                if getattr(lif, "last_spike", None) is not None:
+                    out = lif.last_spike  # LSQ mode: output is dequantized
                 self.stats[name] = {
                     "fire_norm": float((out.float() / max(n_max, 1)).mean()),
                     "saturated": float((out >= n_max).float().mean()),

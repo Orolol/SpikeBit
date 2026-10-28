@@ -19,16 +19,22 @@ def _inputs(device, B=3, T=7, H=16, seed=0):
     return x, beta, gamma, v0
 
 
-def _surrogate_grads(x, beta, gamma, v0, log_s, zp, qmin, qmax, gspike):
-    """Analytic LSQ gradient = autograd of sum(g * clamp(v_pre/s + zp)) with
-    v_pre held fixed (the STE-through-round, detached-reset convention)."""
-    _, v_pre, _ = lsq_fai_lif_apply(x, beta, gamma, v0, log_s.detach(), zp.detach(), qmin, qmax)
+def _lsq_reference_grads(x, beta, gamma, v0, log_s, zp, qmin, qmax, g_out):
+    """Independent formulation: the standard LSQ forward (Esser et al.) written
+    with the round-pass / grad-scale tricks of the reference implementations,
+    applied to the membrane trajectory held fixed. Autograd of it gives the
+    LSQ gradients for s (via log_s) and zp."""
+    _, _, v_pre, _ = lsq_fai_lif_apply(x, beta, gamma, v0, log_s.detach(), zp.detach(), qmin, qmax)
     ls_r = log_s.detach().clone().requires_grad_(True)
     zp_r = zp.detach().clone().requires_grad_(True)
-    u = v_pre.detach() / ls_r.exp() + zp_r
-    inside = ((u > qmin) & (u < qmax)).float()
-    surrogate = (gspike * u * inside).sum() * _lsq_grad_scale(u.numel(), qmin, qmax)
-    return torch.autograd.grad(surrogate, (ls_r, zp_r))
+    s = ls_r.exp()
+    gscale = _lsq_grad_scale(v_pre.numel(), qmin, qmax)
+    s_g = (s - s * gscale).detach() + s * gscale          # grad_scale trick
+    zp_g = (zp_r - zp_r * gscale).detach() + zp_r * gscale
+    u = (v_pre.detach() / s_g + zp_g).clamp(qmin, qmax)
+    q = (u.round() - u).detach() + u                       # round-pass trick
+    x_hat = s_g * (q - zp_g)
+    return torch.autograd.grad((x_hat * g_out).sum(), (ls_r, zp_r))
 
 
 @pytest.mark.parametrize("device", ["cpu", pytest.param("cuda", marks=CUDA)])
@@ -36,16 +42,20 @@ def _surrogate_grads(x, beta, gamma, v0, log_s, zp, qmin, qmax, gspike):
 def test_lsq_step_and_offset_gradients(device, signed):
     qmin, qmax = (-8, 7) if signed else (0, 15)
     x, beta, gamma, v0 = _inputs(device)
-    s = torch.tensor(-0.36, device=device, requires_grad=True)  # log-scale
-    off = torch.tensor(0.4, device=device, requires_grad=True)   # zero-point
-    spike, v_pre, v_final = lsq_fai_lif_apply(x, beta, gamma, v0, s, off, qmin, qmax)
-    gspike = torch.randn_like(spike)
-    (spike * gspike).sum().backward()
-    gs_ref, goff_ref = _surrogate_grads(x, beta, gamma, v0, s, off, qmin, qmax, gspike)
-    assert torch.allclose(s.grad, gs_ref, atol=1e-5, rtol=1e-4), (s.grad, gs_ref)
-    assert torch.allclose(off.grad, goff_ref, atol=1e-5, rtol=1e-4), (off.grad, goff_ref)
+    log_s = torch.tensor(-0.36, device=device, requires_grad=True)
+    zp = torch.tensor(0.4, device=device, requires_grad=True)
+    x_hat, spike, v_pre, v_final = lsq_fai_lif_apply(x, beta, gamma, v0, log_s, zp, qmin, qmax)
+    g_out = torch.randn_like(x_hat)
+    (x_hat * g_out).sum().backward()
+    gs_ref, gzp_ref = _lsq_reference_grads(x, beta, gamma, v0, log_s, zp, qmin, qmax, g_out)
+    assert torch.allclose(log_s.grad, gs_ref, atol=1e-5, rtol=1e-4), (log_s.grad, gs_ref)
+    assert torch.allclose(zp.grad, gzp_ref, atol=1e-5, rtol=1e-4), (zp.grad, gzp_ref)
     assert spike.min() >= qmin and spike.max() <= qmax
     assert torch.equal(spike, spike.round())
+    assert torch.allclose(x_hat, log_s.exp().detach() * (spike - zp.detach()))
+    # Some elements must be clipped for the clipped-branch to be exercised.
+    u = v_pre / log_s.exp().detach() + zp.detach()
+    assert ((u <= qmin) | (u >= qmax)).any()
 
 
 @CUDA
@@ -54,14 +64,14 @@ def test_lsq_cuda_matches_python_reference():
     x, beta, gamma, v0 = _inputs("cuda")
     s = torch.tensor(-0.69, device="cuda", requires_grad=True)
     off = torch.tensor(0.1, device="cuda", requires_grad=True)
-    spike_c, v_pre_c, v_final_c = lsq_fai_lif_apply(x, beta, gamma, v0, s, off, qmin, qmax)
+    xh_c, spike_c, v_pre_c, v_final_c = lsq_fai_lif_apply(x, beta, gamma, v0, s, off, qmin, qmax)
     xc = x.cpu(); sc = s.detach().cpu().requires_grad_(True); offc = off.detach().cpu().requires_grad_(True)
-    spike_p, v_pre_p, v_final_p = lsq_fai_lif_apply(xc, beta.cpu(), gamma.cpu(), v0.cpu(), sc, offc, qmin, qmax)
+    xh_p, spike_p, v_pre_p, v_final_p = lsq_fai_lif_apply(xc, beta.cpu(), gamma.cpu(), v0.cpu(), sc, offc, qmin, qmax)
     assert torch.equal(spike_c.cpu(), spike_p)
     assert torch.allclose(v_pre_c.cpu(), v_pre_p, atol=1e-5)
     g = torch.randn_like(spike_p)
-    (spike_c * g.cuda()).sum().backward()
-    (spike_p * g).sum().backward()
+    (xh_c * g.cuda()).sum().backward()
+    (xh_p * g).sum().backward()
     assert torch.allclose(s.grad.cpu(), sc.grad, atol=1e-5, rtol=1e-4)
     assert torch.allclose(off.grad.cpu(), offc.grad, atol=1e-5, rtol=1e-4)
 
@@ -82,6 +92,9 @@ def test_lsq_init_from_observer_then_learnable():
     n_before = int(lif.observer.num_updates)
     out = lif(x)
     assert int(lif.observer.num_updates) == n_before, "observer must stop tracking after init"
+    assert lif.last_spike is not None and torch.equal(lif.last_spike, lif.last_spike.round())
+    # Output is the dequantized spike: s * (q - zp).
+    assert torch.allclose(out, lif.lsq_log_scale.exp().detach() * (lif.last_spike - lif.lsq_zp.detach()))
     out.sum().backward()
     assert lif.lsq_log_scale.grad is not None and lif.lsq_zp.grad is not None
     # Eval, per-step path, uses the learned grid.

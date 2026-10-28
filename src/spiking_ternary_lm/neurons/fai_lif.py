@@ -233,6 +233,8 @@ class FAILIF(nn.Module):
         # "lsq" (learned step size + offset, see :meth:`enable_lsq`).
         self.act_quant = "minmax"
         self.lsq_init_steps = 1
+        # Last integer spike tensor (LSQ mode only; output is dequantized).
+        self.last_spike: Tensor | None = None
         # Calibration: if True, observer updates stats but the spike
         # output is meaningless (we still produce one for shape parity,
         # but don't reset the membrane potential). Set via
@@ -434,6 +436,9 @@ class FAILIF(nn.Module):
         spike_continuous = (scale_dt * spike).detach()
         new_v = gamma * (v_pre - spike_continuous)
         self.v = new_v.detach()
+        if self.act_quant == "lsq" and int(self.lsq_initialized) == 1:
+            self.last_spike = spike.detach()
+            return scale_dt * (spike - zp_dt)
         return spike
 
     # ----------------------------------------------------------------------
@@ -488,7 +493,7 @@ class FAILIF(nn.Module):
                     if int(self.lsq_seen) >= self.lsq_init_steps:
                         self._lsq_init_from_observer()
                 return out
-            spike_seq, _v_pre, v_final = lsq_fai_lif_apply(
+            x_hat, spike_seq, _v_pre, v_final = lsq_fai_lif_apply(
                 x.to(torch.float32).contiguous(),
                 self.beta.to(torch.float32).contiguous(),
                 self.gamma.to(torch.float32).contiguous(),
@@ -496,7 +501,10 @@ class FAILIF(nn.Module):
                 self.lsq_log_scale, self.lsq_zp, self.observer.qmin, self.observer.qmax,
             )
             self.v = v_final.detach()
-            return spike_seq.to(x.dtype)
+            # Integer spikes kept for the spike-stats hooks (the module
+            # output is the dequantized value in LSQ mode).
+            self.last_spike = spike_seq.detach()
+            return x_hat.to(x.dtype)
 
         return self._forward_sequence_minmax(x)
 
