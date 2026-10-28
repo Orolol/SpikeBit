@@ -224,5 +224,6 @@ largest ones, where relu²'s backward (2z) is largest.
 **Diagnostic in progress.** The same six runs with
 `--act-ste clipped` (gradient 0 where the membrane is outside the grid, commit
 `0bcd51c`), same LR and seeds: runs `runs/ladder/rung3m_*`. This changes the
-quantizer of the pre-registered rung 3, so its results count only if
-Gaétan accepts the change (proposed DECISIONS #17).
+quantizer of the pre-registered rung 3; DECISIONS #17 (accepted the same
+evening) makes these runs rung 3, and the `rung3c_*` runs stay as the
+record of the failure.

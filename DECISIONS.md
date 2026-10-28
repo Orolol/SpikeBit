@@ -908,7 +908,7 @@ and the teacher reference (zero-shot 13.98 cold, 15.41 warm).
 
 ## Decision #17 — Clipped STE for the dequantized FAI-LIF output (2026-10-28)
 
-**Status:** proposed (awaiting Gaétan). Amends DEC-4 (STE outside the grid)
+**Status:** accepted by Gaétan on 2026-10-28. Amends DEC-4 (STE outside the grid)
 for the dequantized, stateless FAI-LIF of DEC-15 rungs 3–4a. Decided after
 the rung-3 results; the reasons are the mechanism and the divergence, not
 the PPL.
