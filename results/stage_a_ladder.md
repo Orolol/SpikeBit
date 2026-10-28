@@ -196,8 +196,8 @@ step 5 800. `rung3c_a4h8_s1` reaches 1.3e7 and recovers. The healthy
 
 `scripts/_diagnose_act_scale.py` on the final checkpoints (first 16 windows
 of the eval tail, train mode) shows an activation-scale runaway in the
-channel-mix under activation quantization, on *every* rung-3 run checked,
-healthy seed included (absmax over the batch):
+channel-mix under activation quantization, on both 8-bit runs, healthy
+seed included (absmax over the batch; 4-bit runs not checked yet):
 
 | block 0 channel-mix | rung 1 | rung 2 | rung 3, 8-bit s1 | rung 3, 8-bit s0 |
 |---|---|---|---|---|
