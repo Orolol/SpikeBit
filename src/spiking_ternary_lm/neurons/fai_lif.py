@@ -23,7 +23,10 @@ Both classes preserve the same outward contract:
     either ``(B, H)`` or ``(B, T, H)`` (looped internally).
 
 Reset semantics: ``V_new = γ * (V - dequant) + (1 - γ) * 0`` where
-``dequant = scale * spike`` for the observer variant. This is one
+``dequant = scale * (spike - zero_point)`` for the observer variant (the
+affine dequantized value; subtracting ``scale * spike`` alone leaves a
+``scale * zp`` error per step that runs the membrane away when the
+zero-point is large, e.g. per-channel grids). This is one
 deliberate simplification over a fully-detailed neuromorphic LIF: γ=0
 zeroes ``V`` every step (not only on fire). It matches the Phase 3.5
 spec. If we later want fire-conditional hard reset, gate the term by
@@ -452,7 +455,7 @@ class FAILIF(nn.Module):
         # autograd (per the same pitfall #1 reasoning as the
         # fixed-threshold variant). γ=1 ⇒ pure soft reset; γ=0 ⇒ V → 0
         # every step.
-        spike_continuous = (scale_dt * spike).detach()
+        spike_continuous = (scale_dt * (spike - zp_dt)).detach()
         new_v = gamma * (v_pre - spike_continuous)
         self.v = new_v.detach()
         if self.act_quant == "lsq" and int(self.lsq_initialized) == 1:

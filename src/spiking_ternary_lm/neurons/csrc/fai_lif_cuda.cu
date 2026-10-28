@@ -6,7 +6,7 @@
 //     v_pre   = beta[c] * v + x[t]
 //     q_float = v_pre / scale + zp                 (FP32)
 //     spike   = clamp(round(q_float), qmin, qmax)  (INT)
-//     dequant = scale * spike                       (FP32, detached)
+//     dequant = scale * (spike - zp)                (FP32, detached)
 //     v_new   = gamma[c] * (v_pre - dequant)
 //
 // Inputs:
@@ -91,7 +91,7 @@ __global__ void fai_lif_forward_kernel(
         if (q < (float)qmin) q = (float)qmin;
         if (q > (float)qmax) q = (float)qmax;
         const float spike = q;
-        const float dequant = scale * spike;
+        const float dequant = scale * (spike - zp);
         const float v_new = gamma_c * (v_pre - dequant);
 
         spike_bc[t * H] = spike;
@@ -151,7 +151,7 @@ __global__ void fai_lif_backward_kernel(
         q = rintf(q);
         if (q < (float)qmin) q = (float)qmin;
         if (q > (float)qmax) q = (float)qmax;
-        const float dequant = scale * q;
+        const float dequant = scale * (q - zp);
         v = gamma_c * (v_pre - dequant);
     }
 
@@ -170,7 +170,7 @@ __global__ void fai_lif_backward_kernel(
         q = rintf(q);
         if (q < (float)qmin) q = (float)qmin;
         if (q > (float)qmax) q = (float)qmax;
-        const float dequant = scale * q;
+        const float dequant = scale * (q - zp);
 
         // v_t = gamma * (v_pre_t - dequant)
         //  => d v_t / d gamma = (v_pre_t - dequant)

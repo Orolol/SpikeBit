@@ -108,7 +108,7 @@ def _fai_lif_python(
         # Identity STE: detach the quant correction so grad flows as identity
         # back through v_pre.
         spike = v_pre + (q - v_pre).detach()
-        dequant = (scale * spike).detach()
+        dequant = (scale * (spike - zp)).detach()
         v_new = gamma * (v_pre - dequant)
         spikes.append(spike)
         v_pres.append(v_pre)

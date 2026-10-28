@@ -48,14 +48,21 @@ def test_state_carries_across_steps():
     # Warm the observer with a broad distribution so the scale is not tiny.
     for _ in range(20):
         lif(torch.randn(1, 2))
-    # Force a clean state, then feed small positive current.
+    # Force a clean state, then feed a current well below half a
+    # quantization step: nothing is emitted, so the (affine) soft reset
+    # subtracts scale * (q - zp) = 0 and the membrane must accumulate
+    # monotonically. (The pre-fix reset subtracted scale * q, i.e. a
+    # spurious scale * zp per step; this test used to pass only because of
+    # that drift.)
     lif.reset_state(batch_shape=(1,))
+    scale, _ = lif.observer.get_scale_and_zero_point()
+    current = float(scale) * 0.02
     seen_v = []
     for _ in range(5):
-        lif(torch.full((1, 2), 0.05))
+        lif(torch.full((1, 2), current))
         seen_v.append(lif.v.clone())
-    # First-step v should be smaller than later v (accumulation).
-    assert seen_v[-1].abs().sum() >= seen_v[0].abs().sum() - 1e-6
+    for a, b in zip(seen_v[:-1], seen_v[1:]):
+        assert (b > a).all(), (a, b)
 
 
 def test_calibrating_mode_updates_observer_but_skips_quant():
