@@ -35,6 +35,7 @@ spec. If we later want fire-conditional hard reset, gate the term by
 from __future__ import annotations
 
 import math
+from typing import Iterable
 
 import torch
 from torch import Tensor, nn
@@ -56,6 +57,18 @@ def _ste_round_clip(x: Tensor, lo: float, hi: float) -> Tensor:
     """
     target = x.round().clamp(lo, hi)
     return x + (target - x).detach()
+
+
+def _dequant_ste(spike: Tensor, scale: Tensor, zero_point: Tensor) -> Tensor:
+    """``scale * (spike - zero_point)`` whose gradient w.r.t. the membrane is 1.
+
+    ``spike`` comes out of an identity STE (d spike / d v_pre = 1), so
+    multiplying it by ``scale`` would give a gradient of ``scale`` instead of
+    the straight-through 1 of the dequantized value. The value is taken
+    detached and the zero-valued ``spike - spike.detach()`` carries the
+    gradient.
+    """
+    return (scale * (spike - zero_point)).detach() + (spike - spike.detach())
 
 
 def _logit(p: float) -> float:
@@ -214,6 +227,7 @@ class FAILIF(nn.Module):
         learnable_gamma: bool = True,
         observer_momentum: float = 0.01,
         seq_chunk_size: int = 0,
+        symmetric: bool = False,
     ) -> None:
         super().__init__()
         if num_bits < 1:
@@ -236,6 +250,13 @@ class FAILIF(nn.Module):
         # "lsq" (learned step size + offset, see :meth:`enable_lsq`) or
         # "none" (identity: no quantization, no membrane; DECISIONS #15).
         self.act_quant = "minmax"
+        # MinMax output: "int" (legacy: the raw spike count q) or "dequant"
+        # (``scale * (q - zp)`` with an identity STE w.r.t. the membrane;
+        # DECISIONS #15). LSQ always outputs the dequantized value.
+        self.output_mode = "int"
+        # True ⇒ beta = 0: no membrane carried across tokens, the LIF is a
+        # plain quantizer (DECISIONS #15 rungs 0-3).
+        self.stateless = False
         self.lsq_init_steps = 1
         # Last integer spike tensor (LSQ mode only; output is dequantized).
         self.last_spike: Tensor | None = None
@@ -273,7 +294,8 @@ class FAILIF(nn.Module):
         # Activation observer. NOTE: it must be a sub-module so its
         # buffers travel with the FAI-LIF on ``.to(device)``.
         self.observer = MovingAverageMinMaxObserver(
-            num_bits=num_bits, signed=signed, momentum=observer_momentum
+            num_bits=num_bits, signed=signed, momentum=observer_momentum,
+            symmetric=symmetric,
         )
 
         # Membrane potential. Lazy init on first forward.
@@ -319,6 +341,7 @@ class FAILIF(nn.Module):
             num_bits=self.observer.num_bits, signed=self.observer.signed,
             momentum=self.observer.momentum, eps=self.observer.eps,
             channel_dim=self.num_neurons if want_channel else None,
+            symmetric=self.observer.symmetric,
         ).to(self.observer.running_min.device)
 
     def _lsq_init_from_observer(self) -> None:
@@ -355,6 +378,8 @@ class FAILIF(nn.Module):
 
     @property
     def beta(self) -> Tensor:
+        if self.stateless:
+            return torch.zeros_like(self.beta_logit if self.learnable_beta else self.beta_const)
         if self.learnable_beta:
             return torch.sigmoid(self.beta_logit)
         return self.beta_const
@@ -464,6 +489,9 @@ class FAILIF(nn.Module):
         if self.act_quant == "lsq" and int(self.lsq_initialized) == 1:
             self.last_spike = spike.detach()
             return scale_dt * (spike - zp_dt)
+        if self.output_mode == "dequant":
+            self.last_spike = spike.detach()
+            return _dequant_ste(spike, scale_dt, zp_dt)
         return spike
 
     # ----------------------------------------------------------------------
@@ -561,6 +589,7 @@ class FAILIF(nn.Module):
 
         T_chunk = min(self.seq_chunk_size, T) if self.seq_chunk_size > 0 else T
         spike_chunks: list[Tensor] = []
+        int_chunks: list[Tensor] = []
         for t0 in range(0, T, T_chunk):
             t1 = min(t0 + T_chunk, T)
             x_chunk = x32[:, t0:t1].contiguous()
@@ -586,6 +615,10 @@ class FAILIF(nn.Module):
                 step_maxes = v_pre_fp32.amax(dim=red)
                 self.observer.update_stats_sequence(step_mins, step_maxes)
 
+            if self.output_mode == "dequant":
+                # Each chunk has its own grid: dequantize with it.
+                int_chunks.append(spike_c.detach())
+                spike_c = _dequant_ste(spike_c, scale_f, zp_f)
             spike_chunks.append(spike_c)
             # Keep v_curr in the autograd graph across chunks so BPTT
             # works through the whole sequence (caller detaches between
@@ -594,6 +627,8 @@ class FAILIF(nn.Module):
 
         # Persist membrane state across calls.
         self.v = v_curr.detach()
+        if int_chunks:
+            self.last_spike = torch.cat(int_chunks, dim=1)
         spike_seq = torch.cat(spike_chunks, dim=1)
         return spike_seq.to(x.dtype)
 
@@ -616,6 +651,77 @@ def set_observer_scope(model: nn.Module, scope: str) -> int:
     for m in model.modules():
         if isinstance(m, FAILIF):
             m.set_observer_scope(scope)
+            n += 1
+    return n
+
+
+@torch.no_grad()
+def calibrate_observers(model: nn.Module, batches: Iterable[Tensor]) -> int:
+    """Set every MinMax observer to the global (min, max) of its FAI-LIF input.
+
+    The model runs ``batches`` (token-id tensors) with FP activations and a
+    fresh state per batch; each observer then starts from the range its site
+    actually sees, instead of the first timestep of the first training batch
+    (which clips the later timesteps: 23 % logit error at 8 bits on a tiny
+    RWKV-4 vs 2.8 % calibrated). Only meaningful with dequantized outputs,
+    where the FP pass sees the scales the quantized model will see (with the
+    legacy integer outputs it inflates the deep ranges, DECISIONS #11).
+    Per-tensor observers only. Returns the number of observers set.
+    """
+    lifs = [m for m in model.modules() if isinstance(m, FAILIF) and m.act_quant == "minmax"]
+    if any(m.observer.per_channel for m in lifs):
+        raise ValueError("calibrate_observers supports per-tensor observers only")
+    lo: dict[int, Tensor] = {}
+    hi: dict[int, Tensor] = {}
+
+    def record(mod: nn.Module, inputs: tuple[Tensor, ...]) -> None:
+        x = inputs[0].detach().float()
+        k = id(mod)
+        lo[k] = torch.minimum(lo[k], x.min()) if k in lo else x.min()
+        hi[k] = torch.maximum(hi[k], x.max()) if k in hi else x.max()
+
+    was_training = model.training
+    handles = [m.register_forward_pre_hook(record) for m in lifs]
+    for m in lifs:
+        m.act_quant = "none"
+    model.eval()
+    try:
+        for ids in batches:
+            model.reset_state()
+            model(ids)
+    finally:
+        for h in handles:
+            h.remove()
+        for m in lifs:
+            m.act_quant = "minmax"
+        model.reset_state()
+        model.train(was_training)
+    for m in lifs:
+        obs = m.observer
+        obs.running_min.copy_(lo[id(m)])
+        obs.running_max.copy_(hi[id(m)])
+        obs.num_updates.fill_(1)
+    return len(lifs)
+
+
+def set_output_mode(model: nn.Module, mode: str) -> int:
+    """MinMax output convention on every :class:`FAILIF`: "int" or "dequant"."""
+    if mode not in ("int", "dequant"):
+        raise ValueError(f"output mode must be 'int' or 'dequant', got {mode!r}")
+    n = 0
+    for m in model.modules():
+        if isinstance(m, FAILIF):
+            m.output_mode = mode
+            n += 1
+    return n
+
+
+def set_stateless(model: nn.Module, flag: bool = True) -> int:
+    """beta = 0 on every :class:`FAILIF` (no membrane carried across tokens)."""
+    n = 0
+    for m in model.modules():
+        if isinstance(m, FAILIF):
+            m.stateless = bool(flag)
             n += 1
     return n
 

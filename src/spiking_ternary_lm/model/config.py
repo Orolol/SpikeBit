@@ -39,6 +39,17 @@ class SpikingTernaryRWKVConfig:
     # Keep the teacher's channel-mix ``relu(.)**2`` in front of the FFN
     # FAI-LIF (DECISIONS #15). False = legacy layout, where FAI-LIF replaces it.
     ffn_relu_sq: bool = False
+    # FAI-LIF grids: "legacy" (asymmetric, ``lif_out`` and the FFN ``lif_v``
+    # unsigned) or "faithful" (DECISIONS #15: zp = 0, signed where the
+    # teacher's activation is signed, unsigned after relu²).
+    act_grid: str = "legacy"
+    # MinMax FAI-LIF output: "int" (raw spike count, legacy) or "dequant"
+    # (``scale * (q - zp)``, identity STE).
+    act_output: str = "int"
+    # beta = 0 on every FAI-LIF: no membrane carried across tokens.
+    lif_stateless: bool = False
+    # Bit-width of the FFN hidden FAI-LIF (relu² output); 0 = ``bits``.
+    bits_ffn_hidden: int = 0
     # MinMax observer scope: "tensor" (one grid per activation tensor, NSLLM)
     # or "channel" (one grid per neuron = per-neuron threshold, DECISIONS #14).
     observer_scope: str = "tensor"

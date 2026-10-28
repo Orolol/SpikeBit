@@ -34,6 +34,8 @@ from spiking_ternary_lm.neurons.fai_lif import (
     disable_act_quant,
     enable_lsq,
     set_observer_scope,
+    set_output_mode,
+    set_stateless,
 )
 from spiking_ternary_lm.quantization.bitlinear import set_weight_quant
 
@@ -59,6 +61,8 @@ class SpikingTernaryRWKV(nn.Module):
                     spiking_r=config.spiking_r,
                     init_v_thr=getattr(config, "init_v_thr", 0.5),
                     ffn_relu_sq=getattr(config, "ffn_relu_sq", False),
+                    act_grid=getattr(config, "act_grid", "legacy"),
+                    bits_ffn_hidden=getattr(config, "bits_ffn_hidden", 0),
                 )
                 for i in range(config.n_layers)
             ]
@@ -74,6 +78,10 @@ class SpikingTernaryRWKV(nn.Module):
             disable_act_quant(self)
         elif act_quant != "minmax":
             raise ValueError(f"unknown act_quant {act_quant!r} (minmax | lsq | none)")
+        if getattr(config, "act_output", "int") != "int":
+            set_output_mode(self, config.act_output)
+        if getattr(config, "lif_stateless", False):
+            set_stateless(self)
         weight_quant = getattr(config, "weight_quant", "ternary")
         if weight_quant == "none":
             set_weight_quant(self, False)

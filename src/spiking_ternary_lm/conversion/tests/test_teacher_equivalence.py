@@ -8,6 +8,7 @@ from spiking_ternary_lm.conversion.rwkv_loader import TeacherInfo
 from spiking_ternary_lm.conversion.swap_layers import load_teacher_into_student
 from spiking_ternary_lm.model.config import SpikingTernaryRWKVConfig
 from spiking_ternary_lm.model.model import SpikingTernaryRWKV
+from spiking_ternary_lm.neurons.fai_lif import calibrate_observers
 
 
 def _tiny_teacher() -> tuple[torch.nn.Module, TeacherInfo]:
@@ -53,3 +54,29 @@ def test_unquantized_student_reproduces_teacher_logits():
     legacy = _student(info, relu_sq=False)
     legacy.reset_state()
     assert (legacy(ids) - ref).abs().max() > 1e-2
+
+
+@torch.no_grad()
+def test_faithful_8bit_activations_stay_close_to_teacher():
+    """Rung 3 wiring: 8-bit MinMax activations with the faithful grids and
+    dequantized outputs keep the converted student near the teacher; the
+    legacy integer-output layout does not."""
+    teacher, info = _tiny_teacher()
+    ids = torch.randint(0, 256, (3, 24), generator=torch.Generator().manual_seed(1))
+    ref = teacher(input_ids=ids, use_cache=False).logits
+
+    def run(**over):
+        cfg = SpikingTernaryRWKVConfig(
+            vocab_size=256, hidden_size=128, n_layers=2, ffn_dim=512, group_size=32,
+            weight_quant="none", bits=8, **over,
+        )
+        student = SpikingTernaryRWKV(cfg)
+        load_teacher_into_student(info, student, strict=True)
+        calibrate_observers(student, [ids])
+        student.eval(); student.reset_state()
+        return float((student(ids) - ref).norm() / ref.norm())
+
+    faithful = run(ffn_relu_sq=True, act_grid="faithful", act_output="dequant", lif_stateless=True)
+    legacy = run()
+    assert faithful < 0.05
+    assert legacy > 10 * faithful

@@ -38,7 +38,7 @@ from spiking_ternary_lm.layers.spiking_ffn import SpikingRWKVChannelMix
 from spiking_ternary_lm.layers.spiking_rwkv import SpikingRWKVTimeMix
 from spiking_ternary_lm.model.config import SpikingTernaryRWKVConfig
 from spiking_ternary_lm.model.model import SpikingTernaryRWKV
-from spiking_ternary_lm.neurons.fai_lif import FAILIF
+from spiking_ternary_lm.neurons.fai_lif import FAILIF, calibrate_observers
 from spiking_ternary_lm.quantization.bitlinear import BitLinear, set_quant_mix
 from spiking_ternary_lm.training.data import build_train_eval_loaders, tokenize_tinystories
 from spiking_ternary_lm.training.schedules import linear_warmup_cosine
@@ -152,6 +152,16 @@ class StageAArgs:
     # ramps linearly from FP to ternary over this fraction of total_steps.
     # 0 = ternary from the first step.
     ternary_ramp_frac: float = 0.0
+    # Activation-quantization overrides for rung 3 (see the config fields).
+    # "" / 0 / False keep the config's value.
+    act_grid: str = ""
+    act_output: str = ""
+    lif_stateless: bool = False
+    bits: int = 0
+    bits_ffn_hidden: int = 0
+    # Calibrate every MinMax observer on this many training batches (FP
+    # pass, global min/max) before the first step. 0 = first-batch init.
+    calibrate_batches: int = 0
 
 
 def make_param_groups(model: SpikingTernaryRWKV, args: StageAArgs) -> list[dict]:
@@ -319,6 +329,11 @@ def train(args: StageAArgs) -> int:
     if args.ffn_relu_sq:
         LOG.info("ffn_relu_sq: the channel-mix keeps the teacher's relu²")
         cfg.ffn_relu_sq = True
+    for name in ("act_grid", "act_output", "lif_stateless", "bits", "bits_ffn_hidden"):
+        value = getattr(args, name)
+        if value:
+            LOG.info("overriding %s: %s -> %s", name, getattr(cfg, name), value)
+            setattr(cfg, name, value)
     model = SpikingTernaryRWKV(cfg)
     if teacher_info is not None:
         report = load_teacher_into_student(teacher_info, model, strict=True)
@@ -382,6 +397,16 @@ def train(args: StageAArgs) -> int:
         args.mixed_precision,
         f"enabled[{autocast_dtype}]" if use_autocast else "disabled",
     )
+
+    if args.calibrate_batches > 0:
+        calib = []
+        for i, (cx, _cy) in enumerate(train_loader):
+            if i >= args.calibrate_batches:
+                break
+            calib.append(cx.to(device))
+        n_obs = calibrate_observers(model, calib)
+        LOG.info("calibrated %d observers on %d batches", n_obs, len(calib))
+        del calib
 
     hook = _SpikeStatsHook(model)
 

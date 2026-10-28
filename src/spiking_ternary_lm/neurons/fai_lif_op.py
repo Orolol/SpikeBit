@@ -346,9 +346,13 @@ class _LSQFAILIFFunction(torch.autograd.Function):
         glog = (gx_hat * ds).sum() * s32 * g
         gzp = (gx_hat * (inside - 1.0)).sum() * s32 * g
 
-        # Gradient w.r.t. the integer spike (chain of x_hat = s * (q - zp)),
-        # plus any direct grad on the integer output (normally None).
-        gspike = gx_hat * s32
+        # Gradient handed to the kernel as the "spike" gradient, which the
+        # kernel passes straight through to the membrane (d spike / d v_pre
+        # = 1). The straight-through gradient of x_hat = s * (q - zp) w.r.t.
+        # the membrane is s * (1/s) = 1, so this is gx_hat itself (it was
+        # gx_hat * s, i.e. off by the step size; review 2026-10-28). Plus any
+        # direct grad on the integer output (normally None).
+        gspike = gx_hat.clone()
         if gspike_int is not None:
             gspike = gspike + gspike_int.to(torch.float32)
         if gv_pre is not None:

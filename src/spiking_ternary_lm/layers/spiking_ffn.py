@@ -55,6 +55,11 @@ class SpikingRWKVChannelMix(nn.Module):
     relu_sq:
         Apply the teacher's ``relu(.)**2`` before ``lif_k``. Default False
         (legacy layout).
+    grid:
+        "legacy" (asymmetric unsigned grids) or "faithful" (DECISIONS #15:
+        zp = 0, ``lif_v`` signed).
+    hidden_bits:
+        Bit-width of ``lif_k`` (the FFN hidden site); 0 = ``bits``.
     """
 
     def __init__(
@@ -70,6 +75,8 @@ class SpikingRWKVChannelMix(nn.Module):
         # See SpikingRWKVTimeMix: ignored by the observer-based FAILIF.
         init_v_thr: float = 0.5,
         relu_sq: bool = False,
+        grid: str = "legacy",
+        hidden_bits: int = 0,
     ) -> None:
         super().__init__()
         self.hidden_size = int(hidden_size)
@@ -100,11 +107,19 @@ class SpikingRWKVChannelMix(nn.Module):
             hidden_size, hidden_size, group_size=group_size, weight_dtype=weight_dtype
         )
 
+        if grid not in ("legacy", "faithful"):
+            raise ValueError(f"grid must be 'legacy' or 'faithful', got {grid!r}")
+        sym = grid == "faithful"
+        # DECISIONS #15: the relu² output is non-negative (unsigned, zp = 0),
+        # the down-projection output is signed. ``hidden_bits`` (0 = ``bits``)
+        # lets the heavy-tailed relu² site run at a wider grid.
         self.lif_k = FAILIF(
-            self.ffn_dim, num_bits=bits, observer_momentum=observer_momentum
+            self.ffn_dim, num_bits=hidden_bits or bits, observer_momentum=observer_momentum,
+            symmetric=sym,
         )
         self.lif_v = FAILIF(
-            hidden_size, num_bits=bits, observer_momentum=observer_momentum
+            hidden_size, num_bits=bits, signed=sym, observer_momentum=observer_momentum,
+            symmetric=sym,
         )
 
         # Token-shift state — one (B, hidden) buffer per block instance.

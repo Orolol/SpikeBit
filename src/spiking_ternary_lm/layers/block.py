@@ -32,6 +32,8 @@ class RWKVBlock(nn.Module):
         spiking_r: bool = True,
         init_v_thr: float = 0.5,  # ignored by observer-based path
         ffn_relu_sq: bool = False,
+        act_grid: str = "legacy",
+        bits_ffn_hidden: int = 0,
     ) -> None:
         super().__init__()
         self.hidden_size = int(hidden_size)
@@ -49,6 +51,7 @@ class RWKVBlock(nn.Module):
             signed_kv=signed_kv,
             spiking_r=spiking_r,
             init_v_thr=init_v_thr,
+            grid=act_grid,
         )
         self.channel_mix = SpikingRWKVChannelMix(
             hidden_size=hidden_size,
@@ -61,6 +64,8 @@ class RWKVBlock(nn.Module):
             observer_momentum=observer_momentum,
             init_v_thr=init_v_thr,
             relu_sq=ffn_relu_sq,
+            grid=act_grid,
+            hidden_bits=bits_ffn_hidden,
         )
 
     def forward(self, x: Tensor) -> Tensor:

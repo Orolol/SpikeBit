@@ -145,6 +145,7 @@ class SpikingRWKVTimeMix(nn.Module):
         observer_momentum: float = 0.01,
         signed_kv: bool = True,
         spiking_r: bool = True,
+        grid: str = "legacy",
         # ``init_v_thr`` is retained as a kwarg only for back-compat with
         # older configs; the new observer-based FAILIF derives the scale
         # online, so this value is **ignored** by the default path.
@@ -183,14 +184,27 @@ class SpikingRWKVTimeMix(nn.Module):
             if spiking_r
             else nn.Identity()
         )
+        if grid not in ("legacy", "faithful"):
+            raise ValueError(f"grid must be 'legacy' or 'faithful', got {grid!r}")
+        if grid == "faithful":
+            # DECISIONS #15: k, v and the gated wkv are signed, so signed
+            # symmetric grids (zp = 0).
+            signed_k = signed_v = signed_out = True
+        else:
+            signed_k = signed_v = signed_kv
+            signed_out = False
+        sym = grid == "faithful"
         self.lif_k = FAILIF(
-            hidden_size, num_bits=bits, signed=signed_kv, observer_momentum=observer_momentum
+            hidden_size, num_bits=bits, signed=signed_k, observer_momentum=observer_momentum,
+            symmetric=sym,
         )
         self.lif_v = FAILIF(
-            hidden_size, num_bits=bits, signed=signed_kv, observer_momentum=observer_momentum
+            hidden_size, num_bits=bits, signed=signed_v, observer_momentum=observer_momentum,
+            symmetric=sym,
         )
         self.lif_out = FAILIF(
-            hidden_size, num_bits=bits, observer_momentum=observer_momentum
+            hidden_size, num_bits=bits, signed=signed_out, observer_momentum=observer_momentum,
+            symmetric=sym,
         )
 
         # Recurrent state buffers. Non-persistent: re-init on each

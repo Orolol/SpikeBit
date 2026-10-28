@@ -53,6 +53,7 @@ class MovingAverageMinMaxObserver(nn.Module):
         momentum: float = 0.01,
         eps: float = 1e-8,
         channel_dim: int | None = None,
+        symmetric: bool = False,
     ) -> None:
         super().__init__()
         if num_bits < 1:
@@ -66,6 +67,10 @@ class MovingAverageMinMaxObserver(nn.Module):
         # LIF); None = per-tensor (NSLLM). Per-channel stats live in separate
         # buffers so a per-tensor checkpoint still loads (DECISIONS #14).
         self.channel_dim = int(channel_dim) if channel_dim else None
+        # ``symmetric``: zero-point pinned to 0 (a zero input emits no spike,
+        # and the grid folds into the next BitLinear without a bias) with
+        # scale = max(|min|, |max|) / qmax (DECISIONS #15 "faithful" grids).
+        self.symmetric = bool(symmetric)
 
         # Buffers (saved with state_dict; survive .to(device)).
         self.register_buffer("running_min", torch.tensor(0.0))
@@ -196,6 +201,9 @@ class MovingAverageMinMaxObserver(nn.Module):
             x_recon = (q - zero_point) * scale
         """
         rmin, rmax = self._stats()
+        if self.symmetric:
+            scale = torch.maximum(rmin.abs(), rmax.abs()).clamp(min=self.eps) / self.qmax
+            return scale, torch.zeros_like(scale)
         range_val = (rmax - rmin).clamp(min=self.eps)
         n_levels = self.qmax - self.qmin
         scale = range_val / n_levels
