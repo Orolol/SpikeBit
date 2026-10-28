@@ -1,0 +1,247 @@
+"""Fused FAI-LIF op for the observer-based :class:`FAILIF` neuron.
+
+Implements one full sequence-forward of the LIF + integer-STE quantize +
+soft-reset cycle in a single CUDA kernel, with a custom backward. The
+observer's running min/max EMA is handled OUTSIDE the kernel (the host
+calls ``observer.update_stats(v_pre_seq)`` once on the returned membrane
+trajectory) — see ``FAILIF.forward`` for the orchestration.
+
+Public entry point:
+
+    fai_lif_apply(x, beta, gamma, v0, scale, zp, qmin, qmax)
+        -> (spike_seq, v_pre_seq, v_final)
+
+All inputs are FP32. Shapes:
+  x           : (B, T, H)
+  beta, gamma : (H,) post-sigmoid (already in [0, 1])
+  v0          : (B, H)
+  scale, zp   : scalar tensors (FP32)
+  qmin, qmax  : ints
+
+Returns:
+  spike_seq   : (B, T, H) FP32 integer-valued
+  v_pre_seq   : (B, T, H) FP32 (for host-side observer.update_stats)
+  v_final     : (B, H)   FP32 (carry state)
+
+Gradients:
+  STE-identity through the round/clamp; ``scale``, ``zp``, ``qmin``,
+  ``qmax`` never receive grads. Grads flow to ``x``, ``beta``, ``gamma``,
+  ``v0``.
+"""
+from __future__ import annotations
+
+import os
+from pathlib import Path
+from typing import Any
+
+import torch
+from torch import Tensor
+
+# --- Lazy CUDA extension load --------------------------------------------
+
+_CSRC_DIR = Path(__file__).resolve().parent / "csrc"
+_EXT = None
+_LOAD_ATTEMPTED = False
+
+
+def _load_extension():
+    """Compile (or fetch from cache) the fused FAI-LIF CUDA extension.
+
+    Returns ``None`` if CUDA is unavailable or compilation fails — the
+    caller falls back to the Python reference path.
+    """
+    global _EXT, _LOAD_ATTEMPTED
+    if _EXT is not None or _LOAD_ATTEMPTED:
+        return _EXT
+    _LOAD_ATTEMPTED = True
+    if not torch.cuda.is_available():
+        return None
+    try:
+        from torch.utils.cpp_extension import load
+        arch = os.environ.get("TORCH_CUDA_ARCH_LIST", "12.0")
+        os.environ["TORCH_CUDA_ARCH_LIST"] = arch
+        _EXT = load(
+            name="spikebit_fai_lif_cuda",
+            sources=[str(_CSRC_DIR / "fai_lif_cuda.cu")],
+            extra_cuda_cflags=[
+                "-O3",
+                "--use_fast_math",
+                "-Xptxas=-O3",
+                "-lineinfo",
+            ],
+            verbose=False,
+        )
+    except Exception as exc:  # pragma: no cover - build failures bubble up
+        print(f"[fai_lif_op] CUDA extension failed to load, falling back to Python: {exc}")
+        _EXT = None
+    return _EXT
+
+
+# --- Reference (Python) implementation ----------------------------------
+
+def _fai_lif_python(
+    x: Tensor, beta: Tensor, gamma: Tensor, v0: Tensor,
+    scale: Tensor, zp: Tensor, qmin: int, qmax: int,
+) -> tuple[Tensor, Tensor, Tensor]:
+    """Pure-PyTorch reference that mirrors the CUDA kernel exactly.
+
+    Uses a FIXED ``scale``/``zp`` for all T steps (matching the kernel's
+    contract — the observer EMA update is the host's responsibility).
+
+    All tensors FP32. Shapes match ``fai_lif_apply``.
+    Returns (spike_seq (B,T,H), v_pre_seq (B,T,H), v_final (B,H)).
+    """
+    B, T, H = x.shape
+    v = v0
+    spikes = []
+    v_pres = []
+    inv_scale = 1.0 / scale
+    for t in range(T):
+        x_t = x[:, t]
+        v_pre = beta * v + x_t
+        # STE quantize: round + clamp on a detached path, identity on x.
+        q = (v_pre * inv_scale + zp).round().clamp(qmin, qmax)
+        # Identity STE: detach the quant correction so grad flows as identity
+        # back through v_pre.
+        spike = v_pre + (q - v_pre).detach()
+        dequant = (scale * spike).detach()
+        v_new = gamma * (v_pre - dequant)
+        spikes.append(spike)
+        v_pres.append(v_pre)
+        v = v_new
+    return torch.stack(spikes, dim=1), torch.stack(v_pres, dim=1), v
+
+
+# --- Autograd Function (CUDA fast path) ---------------------------------
+
+class _FAILIFFunction(torch.autograd.Function):
+    """Fused FAI-LIF sequence forward.
+
+    Forward stashes the inputs needed by the backward kernel's replay.
+    """
+
+    @staticmethod
+    def forward(
+        ctx: Any,
+        x: Tensor, beta: Tensor, gamma: Tensor, v0: Tensor,
+        scale: Tensor, zp: Tensor, qmin: int, qmax: int,
+    ) -> tuple[Tensor, Tensor, Tensor]:
+        ext = _load_extension()
+        if ext is None or not x.is_cuda:
+            spike, v_pre, v_final = _fai_lif_python(
+                x, beta, gamma, v0, scale, zp, qmin, qmax
+            )
+            ctx.save_for_backward(x, beta, gamma, v0)
+            ctx._scale = float(scale.item()) if isinstance(scale, Tensor) else float(scale)
+            ctx._zp = float(zp.item()) if isinstance(zp, Tensor) else float(zp)
+            ctx._qmin = int(qmin)
+            ctx._qmax = int(qmax)
+            ctx._use_cuda = False
+            return spike, v_pre, v_final
+
+        x_c = x.contiguous()
+        beta_c = beta.contiguous()
+        gamma_c = gamma.contiguous()
+        v0_c = v0.contiguous()
+        scale_f = float(scale.item()) if isinstance(scale, Tensor) else float(scale)
+        zp_f = float(zp.item()) if isinstance(zp, Tensor) else float(zp)
+        spike, v_pre, v_final = ext.forward(
+            x_c, beta_c, gamma_c, v0_c, scale_f, zp_f, int(qmin), int(qmax)
+        )
+        ctx.save_for_backward(x_c, beta_c, gamma_c, v0_c)
+        ctx._scale = scale_f
+        ctx._zp = zp_f
+        ctx._qmin = int(qmin)
+        ctx._qmax = int(qmax)
+        ctx._use_cuda = True
+        return spike, v_pre, v_final
+
+    @staticmethod
+    def backward(  # type: ignore[override]
+        ctx: Any,
+        gspike: Tensor, gv_pre: Tensor, gv_final: Tensor,
+    ) -> tuple[Tensor | None, ...]:
+        x, beta, gamma, v0 = ctx.saved_tensors
+        B, T, H = x.shape
+
+        # gv_pre is the gradient flowing back through the v_pre_seq output.
+        # That output is consumed by the host-side observer.update_stats
+        # which runs under @torch.no_grad, so in practice gv_pre is zero.
+        # We still accept and ignore it to keep the autograd signature clean.
+        # If a downstream consumer ever does take a real grad through v_pre,
+        # we'd need to fold it into gspike (since spike = v_pre + (q-v_pre).detach()
+        # has identity STE on v_pre, so adding gspike + gv_pre would do it).
+        # Belt-and-braces: if gv_pre is non-trivial, treat it as additional
+        # gspike-equivalent gradient (works because of the identity STE).
+        if gv_pre is not None and gv_pre.abs().sum() > 0:
+            gspike = gspike + gv_pre
+
+        if gv_final is None:
+            gv_final = torch.zeros(B, H, dtype=torch.float32, device=x.device)
+        gv_final = gv_final.to(torch.float32).contiguous()
+        gspike = gspike.to(torch.float32).contiguous()
+
+        if not getattr(ctx, "_use_cuda", False):
+            return _backward_python(
+                x, beta, gamma, v0,
+                ctx._scale, ctx._zp, ctx._qmin, ctx._qmax,
+                gspike, gv_final,
+            )
+
+        ext = _load_extension()
+        gx, gbeta, ggamma, gv0 = ext.backward(
+            x, beta, gamma, v0,
+            ctx._scale, ctx._zp, ctx._qmin, ctx._qmax,
+            gspike, gv_final,
+        )
+        # No grads for scale, zp, qmin, qmax.
+        return gx, gbeta, ggamma, gv0, None, None, None, None
+
+
+def _backward_python(
+    x: Tensor, beta: Tensor, gamma: Tensor, v0: Tensor,
+    scale: float, zp: float, qmin: int, qmax: int,
+    gspike: Tensor, gv_final: Tensor,
+):
+    """Python backward — used on CPU and as a numerical reference.
+
+    Uses torch autograd on the reference forward. Only returns grads for
+    the inputs that take grad in the autograd Function.
+    """
+    x_r = x.detach().clone().requires_grad_(True)
+    beta_r = beta.detach().clone().requires_grad_(True)
+    gamma_r = gamma.detach().clone().requires_grad_(True)
+    v0_r = v0.detach().clone().requires_grad_(True)
+    scale_t = torch.tensor(scale, dtype=torch.float32, device=x.device)
+    zp_t = torch.tensor(zp, dtype=torch.float32, device=x.device)
+    spike, _v_pre, v_final = _fai_lif_python(
+        x_r, beta_r, gamma_r, v0_r, scale_t, zp_t, qmin, qmax
+    )
+    grads = torch.autograd.grad(
+        (spike, v_final),
+        (x_r, beta_r, gamma_r, v0_r),
+        grad_outputs=(gspike, gv_final),
+        retain_graph=False,
+        allow_unused=True,
+    )
+    gx, gbeta, ggamma, gv0 = grads
+    if gx is None:
+        gx = torch.zeros_like(x)
+    if gbeta is None:
+        gbeta = torch.zeros_like(beta)
+    if ggamma is None:
+        ggamma = torch.zeros_like(gamma)
+    if gv0 is None:
+        gv0 = torch.zeros_like(v0)
+    return gx, gbeta, ggamma, gv0, None, None, None, None
+
+
+def fai_lif_apply(
+    x: Tensor, beta: Tensor, gamma: Tensor, v0: Tensor,
+    scale: Tensor, zp: Tensor, qmin: int, qmax: int,
+) -> tuple[Tensor, Tensor, Tensor]:
+    """Apply the fused FAI-LIF sequence forward.
+
+    All inputs must be FP32. Returns ``(spike_seq, v_pre_seq, v_final)``.
+    """
+    return _FAILIFFunction.apply(x, beta, gamma, v0, scale, zp, qmin, qmax)

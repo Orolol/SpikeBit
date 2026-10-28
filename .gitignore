@@ -1,0 +1,33 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.uv-cache/
+build/
+dist/
+
+# Caches / data / checkpoints
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+data/
+checkpoints/
+runs/
+wandb/
+*.pt
+*.bin
+*.safetensors
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+*.swp
+
+# Local secrets / overrides
+.env
+.envrc
+.claude/local/
+
+# Claude Code session lock
+.claude/scheduled_tasks.lock

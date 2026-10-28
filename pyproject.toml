@@ -1,0 +1,57 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "spiking-ternary-lm"
+version = "0.1.0"
+description = "Spiking Ternary Language Model: RWKV-4 + FAI-LIF integer spikes + BitNet b1.58 ternary weights."
+readme = "README.md"
+requires-python = ">=3.12,<3.14"
+license = { text = "MIT" }
+authors = [{ name = "Gaétan" }]
+
+# Notes on the torch pin:
+#   * sm_120 (RTX 5090 / Blackwell) needs CUDA wheels compiled for cu126.
+#     PyTorch 2.7+ ships those out of the box; 2.6 may need the cu126 index.
+#     Use `uv sync --index-strategy unsafe-best-match` or set the torch index
+#     explicitly if the default wheel does not include sm_120 kernels.
+dependencies = [
+  "torch>=2.7",
+  "numpy",
+  "einops",
+  "tqdm",
+  "pyyaml>=6.0",
+  "datasets>=3.0",
+  "huggingface-hub>=0.26",
+  "tokenizers>=0.20",
+  "transformers>=4.46",
+  "rwkv>=0.8.28",
+  "wandb",
+  # Pillow is required by HF `datasets` to decode the PNG images stored
+  # in `ylecun/mnist` (and most image-bearing datasets). Not pulled
+  # automatically; we depend on it explicitly.
+  "Pillow>=10.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "pytest-xdist", "ruff>=0.6"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/spiking_ternary_lm"]
+
+[tool.pytest.ini_options]
+testpaths = ["src", "tests"]
+python_files = ["test_*.py"]
+addopts = "-ra -q"
+filterwarnings = [
+  "ignore::DeprecationWarning",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+ignore = ["E501"]  # line length handled by formatter
