@@ -32,6 +32,9 @@ class SpikingTernaryRWKVConfig:
     # Activation quantizer for every FAI-LIF: "minmax" (observer-tracked,
     # NSLLM-style) or "lsq" (learned step size, DECISIONS #14).
     act_quant: str = "minmax"
+    # MinMax observer scope: "tensor" (one grid per activation tensor, NSLLM)
+    # or "channel" (one grid per neuron = per-neuron threshold, DECISIONS #14).
+    observer_scope: str = "tensor"
     lsq_init_steps: int = 1
     # Kept for back-compat with the legacy FAILIFFixedThreshold path,
     # ignored by the observer-based FAILIF default.

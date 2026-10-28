@@ -139,8 +139,8 @@ class _FAILIFFunction(torch.autograd.Function):
                 x, beta, gamma, v0, scale, zp, qmin, qmax
             )
             ctx.save_for_backward(x, beta, gamma, v0)
-            ctx._scale = float(scale.item()) if isinstance(scale, Tensor) else float(scale)
-            ctx._zp = float(zp.item()) if isinstance(zp, Tensor) else float(zp)
+            ctx._scale = scale.detach() if isinstance(scale, Tensor) else float(scale)
+            ctx._zp = zp.detach() if isinstance(zp, Tensor) else float(zp)
             ctx._qmin = int(qmin)
             ctx._qmax = int(qmax)
             ctx._use_cuda = False
@@ -152,8 +152,9 @@ class _FAILIFFunction(torch.autograd.Function):
         v0_c = v0.contiguous()
         # (scale, zp) stay on-device as 0-dim FP32 tensors: the kernel
         # dereferences them itself, so no ``.item()`` host sync per call.
-        scale_t = torch.as_tensor(scale, dtype=torch.float32, device=x.device).reshape(())
-        zp_t = torch.as_tensor(zp, dtype=torch.float32, device=x.device).reshape(())
+        # (1,) per-tensor or (H,) per-channel grids, read in-kernel.
+        scale_t = torch.as_tensor(scale, dtype=torch.float32, device=x.device).reshape(-1).contiguous()
+        zp_t = torch.as_tensor(zp, dtype=torch.float32, device=x.device).reshape(-1).contiguous()
         spike, v_pre, v_final = ext.forward(
             x_c, beta_c, gamma_c, v0_c, scale_t, zp_t, int(qmin), int(qmax)
         )
@@ -214,7 +215,7 @@ class _FAILIFFunction(torch.autograd.Function):
 
 def _backward_python(
     x: Tensor, beta: Tensor, gamma: Tensor, v0: Tensor,
-    scale: float, zp: float, qmin: int, qmax: int,
+    scale, zp, qmin: int, qmax: int,
     gspike: Tensor, gv_final: Tensor,
 ):
     """Python backward — used on CPU and as a numerical reference.
@@ -229,8 +230,8 @@ def _backward_python(
         beta_r = beta.detach().clone().requires_grad_(True)
         gamma_r = gamma.detach().clone().requires_grad_(True)
         v0_r = v0.detach().clone().requires_grad_(True)
-        scale_t = torch.tensor(scale, dtype=torch.float32, device=x.device)
-        zp_t = torch.tensor(zp, dtype=torch.float32, device=x.device)
+        scale_t = torch.as_tensor(scale, dtype=torch.float32, device=x.device)
+        zp_t = torch.as_tensor(zp, dtype=torch.float32, device=x.device)
         spike, _v_pre, v_final = _fai_lif_python(
             x_r, beta_r, gamma_r, v0_r, scale_t, zp_t, qmin, qmax
         )

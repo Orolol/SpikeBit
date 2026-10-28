@@ -52,6 +52,7 @@ class MovingAverageMinMaxObserver(nn.Module):
         signed: bool = False,
         momentum: float = 0.01,
         eps: float = 1e-8,
+        channel_dim: int | None = None,
     ) -> None:
         super().__init__()
         if num_bits < 1:
@@ -60,11 +61,19 @@ class MovingAverageMinMaxObserver(nn.Module):
         self.signed = bool(signed)
         self.momentum = float(momentum)
         self.eps = float(eps)
+        # ``channel_dim`` = number of channels for a per-channel grid (one
+        # (scale, zp) per last-dim index, i.e. a per-neuron threshold for a
+        # LIF); None = per-tensor (NSLLM). Per-channel stats live in separate
+        # buffers so a per-tensor checkpoint still loads (DECISIONS #14).
+        self.channel_dim = int(channel_dim) if channel_dim else None
 
         # Buffers (saved with state_dict; survive .to(device)).
         self.register_buffer("running_min", torch.tensor(0.0))
         self.register_buffer("running_max", torch.tensor(1.0))
         self.register_buffer("num_updates", torch.tensor(0, dtype=torch.long))
+        if self.channel_dim is not None:
+            self.register_buffer("running_min_c", torch.zeros(self.channel_dim))
+            self.register_buffer("running_max_c", torch.ones(self.channel_dim))
 
         if self.signed:
             self.qmin = -(2 ** (self.num_bits - 1))
@@ -77,20 +86,39 @@ class MovingAverageMinMaxObserver(nn.Module):
     # Stats update
     # ----------------------------------------------------------------------
 
+    @property
+    def per_channel(self) -> bool:
+        return self.channel_dim is not None
+
+    def _stats(self) -> tuple[Tensor, Tensor]:
+        if self.per_channel:
+            return self.running_min_c, self.running_max_c
+        return self.running_min, self.running_max
+
     @torch.no_grad()
     def update_stats(self, x: Tensor) -> None:
-        """EMA-update running_min/running_max from the current batch."""
-        cur_min = x.min().detach().to(self.running_min.dtype).to(self.running_min.device)
-        cur_max = x.max().detach().to(self.running_max.dtype).to(self.running_max.device)
+        """EMA-update the running range from the current batch.
+
+        Per-tensor: global min/max. Per-channel: min/max over every axis but
+        the last (``x`` is ``(..., C)``).
+        """
+        rmin, rmax = self._stats()
+        if self.per_channel:
+            flat = x.detach().reshape(-1, self.channel_dim)
+            cur_min = flat.amin(dim=0).to(rmin.dtype).to(rmin.device)
+            cur_max = flat.amax(dim=0).to(rmax.dtype).to(rmax.device)
+        else:
+            cur_min = x.min().detach().to(rmin.dtype).to(rmin.device)
+            cur_max = x.max().detach().to(rmax.dtype).to(rmax.device)
         if int(self.num_updates) == 0:
             # First batch: initialise directly to avoid EMA bias against the
             # zero-initialised running buffers.
-            self.running_min.copy_(cur_min)
-            self.running_max.copy_(cur_max)
+            rmin.copy_(cur_min)
+            rmax.copy_(cur_max)
         else:
             m = self.momentum
-            self.running_min.mul_(1 - m).add_(cur_min, alpha=m)
-            self.running_max.mul_(1 - m).add_(cur_max, alpha=m)
+            rmin.mul_(1 - m).add_(cur_min, alpha=m)
+            rmax.mul_(1 - m).add_(cur_max, alpha=m)
         self.num_updates += 1
 
     @torch.no_grad()
@@ -114,21 +142,20 @@ class MovingAverageMinMaxObserver(nn.Module):
                 f"step_mins/step_maxes shape mismatch: {tuple(step_mins.shape)} "
                 f"vs {tuple(step_maxes.shape)}"
             )
-        if step_mins.dim() != 1:
+        expected_dim = 2 if self.per_channel else 1
+        if step_mins.dim() != expected_dim:
             raise ValueError(
-                f"step_mins/step_maxes must be 1-D (T,), got {tuple(step_mins.shape)}"
+                f"step_mins/step_maxes must be {expected_dim}-D for this observer, "
+                f"got {tuple(step_mins.shape)}"
             )
-        T = int(step_mins.numel())
+        T = int(step_mins.shape[0])
         if T == 0:
             return
 
+        rmin, rmax = self._stats()
         # Bring both into the buffer's dtype/device once.
-        mins = step_mins.detach().to(
-            dtype=self.running_min.dtype, device=self.running_min.device
-        )
-        maxes = step_maxes.detach().to(
-            dtype=self.running_max.dtype, device=self.running_max.device
-        )
+        mins = step_mins.detach().to(dtype=rmin.dtype, device=rmin.device)
+        maxes = step_maxes.detach().to(dtype=rmax.dtype, device=rmax.device)
 
         # Closed form of T sequential EMA steps, evaluated as one dot
         # product instead of 2T scalar kernels (launch-bound otherwise):
@@ -139,10 +166,11 @@ class MovingAverageMinMaxObserver(nn.Module):
         # ``num_updates``.
         decay, weights = self._sequence_weights(T, mins)
         is_first = self.num_updates == 0
-        old_min = torch.where(is_first, mins[0], self.running_min)
-        old_max = torch.where(is_first, maxes[0], self.running_max)
-        self.running_min.copy_(decay * old_min + torch.dot(weights, mins))
-        self.running_max.copy_(decay * old_max + torch.dot(weights, maxes))
+        old_min = torch.where(is_first, mins[0], rmin)
+        old_max = torch.where(is_first, maxes[0], rmax)
+        # (T,)·(T,) -> scalar, or (T,)@(T,C) -> (C,).
+        rmin.copy_(decay * old_min + weights @ mins)
+        rmax.copy_(decay * old_max + weights @ maxes)
         self.num_updates += T
 
     def _sequence_weights(self, T: int, like: Tensor) -> tuple[Tensor, Tensor]:
@@ -167,13 +195,14 @@ class MovingAverageMinMaxObserver(nn.Module):
             q = round(x / scale + zero_point).clamp(qmin, qmax)
             x_recon = (q - zero_point) * scale
         """
-        range_val = (self.running_max - self.running_min).clamp(min=self.eps)
+        rmin, rmax = self._stats()
+        range_val = (rmax - rmin).clamp(min=self.eps)
         n_levels = self.qmax - self.qmin
         scale = range_val / n_levels
         # Solve so x = running_min maps to q = qmin:
         #   qmin = round(running_min / scale + zero_point)
         #   zero_point = qmin - round(running_min / scale)
-        zero_point = self.qmin - (self.running_min / scale).round()
+        zero_point = self.qmin - (rmin / scale).round()
         return scale, zero_point
 
     # ----------------------------------------------------------------------
@@ -188,5 +217,6 @@ class MovingAverageMinMaxObserver(nn.Module):
     def extra_repr(self) -> str:
         return (
             f"num_bits={self.num_bits}, signed={self.signed}, momentum={self.momentum}, "
+            f"scope={'channel' if self.per_channel else 'tensor'}, "
             f"range=[{self.qmin},{self.qmax}], updates={int(self.num_updates)}"
         )

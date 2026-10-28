@@ -112,6 +112,10 @@ class StageAArgs:
     # config, "minmax" or "lsq" forces it (a MinMax checkpoint loads into an
     # LSQ model; the LSQ grids are initialised from the first batch).
     act_quant: str = ""
+    # Override the observer scope: "" keeps the checkpoint's, "tensor" or
+    # "channel" forces it (a per-tensor checkpoint loads into a per-channel
+    # model; the per-channel grids initialise from the first batch).
+    observer_scope: str = ""
     lsq_init_steps: int = 1
     # LR of the LSQ grid parameters (log-scale and zero-point). Adam's step is
     # ~lr per step in log-scale units, i.e. ~1 % of scale per step at 1e-2:
@@ -256,6 +260,11 @@ def train(args: StageAArgs) -> int:
         LOG.info("overriding act_quant: %s -> %s", getattr(cfg, "act_quant", "minmax"), args.act_quant)
         cfg.act_quant = args.act_quant
         cfg.lsq_init_steps = int(args.lsq_init_steps)
+    if args.observer_scope:
+        if args.observer_scope not in ("tensor", "channel"):
+            raise ValueError(f"--observer-scope must be tensor or channel; got {args.observer_scope}")
+        LOG.info("overriding observer_scope: %s -> %s", getattr(cfg, "observer_scope", "tensor"), args.observer_scope)
+        cfg.observer_scope = args.observer_scope
     if args.observer_momentum > 0:
         LOG.info(
             "overriding observer_momentum: %s -> %s",

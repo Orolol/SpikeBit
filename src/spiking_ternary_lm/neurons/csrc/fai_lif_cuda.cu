@@ -14,8 +14,9 @@
 //   beta       : (H,)        FP32, post-sigmoid (already in [0,1])
 //   gamma      : (H,)        FP32, post-sigmoid
 //   v0         : (B, H)      FP32
-//   scale, zp  : 0-dim FP32 device tensors (one per tensor, derived from
-//                the observer; read on-device so the host never syncs)
+//   scale, zp  : FP32 device tensors with 1 (per-tensor) or H (per-channel)
+//                elements, derived from the observer; read on-device so the
+//                host never syncs
 //   qmin, qmax : ints
 //
 // Outputs:
@@ -55,8 +56,9 @@ __global__ void fai_lif_forward_kernel(
     const float* __restrict__ beta,      // (H,)
     const float* __restrict__ gamma,     // (H,)
     const float* __restrict__ v0,        // (B, H)
-    const float* __restrict__ scale_ptr,  // 0-dim device scalar
-    const float* __restrict__ zp_ptr,     // 0-dim device scalar
+    const float* __restrict__ scale_ptr,  // (1,) or (H,) device tensor
+    const float* __restrict__ zp_ptr,     // (1,) or (H,) device tensor
+    const int grid_stride,                // 0: per-tensor grid, 1: per-channel
     const int qmin,
     const int qmax,
     float* __restrict__ spike_seq,       // (B, T, H)
@@ -67,8 +69,8 @@ __global__ void fai_lif_forward_kernel(
     const int b = idx / H;
     const int h = idx % H;
 
-    const float scale = *scale_ptr;
-    const float zp = *zp_ptr;
+    const float scale = scale_ptr[h * grid_stride];
+    const float zp = zp_ptr[h * grid_stride];
     const float beta_c  = beta[h];
     const float gamma_c = gamma[h];
     const float inv_scale = 1.0f / scale;
@@ -108,8 +110,9 @@ __global__ void fai_lif_backward_kernel(
     const float* __restrict__ beta,      // (H,)
     const float* __restrict__ gamma,     // (H,)
     const float* __restrict__ v0,        // (B, H)
-    const float* __restrict__ scale_ptr,  // 0-dim device scalar
-    const float* __restrict__ zp_ptr,     // 0-dim device scalar
+    const float* __restrict__ scale_ptr,  // (1,) or (H,) device tensor
+    const float* __restrict__ zp_ptr,     // (1,) or (H,) device tensor
+    const int grid_stride,                // 0: per-tensor grid, 1: per-channel
     const int qmin,
     const int qmax,
     const float* __restrict__ gspike,    // (B, T, H)
@@ -123,8 +126,8 @@ __global__ void fai_lif_backward_kernel(
     const int b = idx / H;
     const int h = idx % H;
 
-    const float scale = *scale_ptr;
-    const float zp = *zp_ptr;
+    const float scale = scale_ptr[h * grid_stride];
+    const float zp = zp_ptr[h * grid_stride];
     const float beta_c  = beta[h];
     const float gamma_c = gamma[h];
     const float inv_scale = 1.0f / scale;
@@ -211,10 +214,13 @@ std::vector<torch::Tensor> fai_lif_forward_cuda(
     TORCH_CHECK(gamma.dtype() == torch::kFloat32 && gamma.is_contiguous(), "gamma must be contiguous FP32");
     TORCH_CHECK(v0.dtype() == torch::kFloat32 && v0.is_contiguous(), "v0 must be contiguous FP32");
     TORCH_CHECK(x.dim() == 3, "x must be 3D (B, T, H)");
-    TORCH_CHECK(scale.is_cuda() && scale.dtype() == torch::kFloat32 && scale.numel() == 1,
-                "scale must be a 1-element CUDA FP32 tensor");
-    TORCH_CHECK(zp.is_cuda() && zp.dtype() == torch::kFloat32 && zp.numel() == 1,
-                "zp must be a 1-element CUDA FP32 tensor");
+    TORCH_CHECK(scale.is_cuda() && scale.dtype() == torch::kFloat32 && scale.is_contiguous()
+                && (scale.numel() == 1 || scale.numel() == x.size(2)),
+                "scale must be a contiguous CUDA FP32 tensor with 1 or H elements");
+    TORCH_CHECK(zp.is_cuda() && zp.dtype() == torch::kFloat32 && zp.is_contiguous()
+                && zp.numel() == scale.numel(),
+                "zp must be a contiguous CUDA FP32 tensor shaped like scale");
+    const int grid_stride = scale.numel() == x.size(2) ? 1 : 0;
 
     const int B = x.size(0);
     const int T = x.size(1);
@@ -237,7 +243,7 @@ std::vector<torch::Tensor> fai_lif_forward_cuda(
         beta.data_ptr<float>(),
         gamma.data_ptr<float>(),
         v0.data_ptr<float>(),
-        scale.data_ptr<float>(), zp.data_ptr<float>(),
+        scale.data_ptr<float>(), zp.data_ptr<float>(), grid_stride,
         (int)qmin, (int)qmax,
         spike_seq.data_ptr<float>(),
         v_pre_seq.data_ptr<float>(),
@@ -260,8 +266,10 @@ std::vector<torch::Tensor> fai_lif_backward_cuda(
                 "x must be contiguous CUDA FP32");
     TORCH_CHECK(beta.is_contiguous() && gamma.is_contiguous() && v0.is_contiguous(),
                 "beta/gamma/v0 must be contiguous");
-    TORCH_CHECK(scale.is_cuda() && scale.numel() == 1 && zp.is_cuda() && zp.numel() == 1,
-                "scale/zp must be 1-element CUDA tensors");
+    TORCH_CHECK(scale.is_cuda() && scale.is_contiguous() && zp.is_cuda() && zp.is_contiguous()
+                && (scale.numel() == 1 || scale.numel() == x.size(2)) && zp.numel() == scale.numel(),
+                "scale/zp must be contiguous CUDA tensors with 1 or H elements");
+    const int grid_stride = scale.numel() == x.size(2) ? 1 : 0;
 
     const int B = x.size(0);
     const int T = x.size(1);
@@ -282,7 +290,7 @@ std::vector<torch::Tensor> fai_lif_backward_cuda(
         beta.data_ptr<float>(),
         gamma.data_ptr<float>(),
         v0.data_ptr<float>(),
-        scale.data_ptr<float>(), zp.data_ptr<float>(),
+        scale.data_ptr<float>(), zp.data_ptr<float>(), grid_stride,
         (int)qmin, (int)qmax,
         gspike.contiguous().data_ptr<float>(),
         gv_final.contiguous().data_ptr<float>(),

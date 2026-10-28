@@ -298,6 +298,25 @@ class FAILIF(nn.Module):
         self.register_buffer("lsq_initialized", torch.tensor(0, dtype=torch.long))
         self.register_buffer("lsq_seen", torch.tensor(0, dtype=torch.long), persistent=False)
 
+    def set_observer_scope(self, scope: str) -> None:
+        """Replace the observer by a per-tensor or per-channel one (fresh stats).
+
+        Per-channel = one (scale, zero-point) per neuron, i.e. a per-neuron
+        threshold. The old scalar buffers stay in the state_dict so a
+        per-tensor checkpoint loads; the per-channel grid is then initialised
+        from the first training batch.
+        """
+        if scope not in ("tensor", "channel"):
+            raise ValueError(f"observer scope must be 'tensor' or 'channel', got {scope!r}")
+        want_channel = scope == "channel"
+        if want_channel == self.observer.per_channel:
+            return
+        self.observer = MovingAverageMinMaxObserver(
+            num_bits=self.observer.num_bits, signed=self.observer.signed,
+            momentum=self.observer.momentum, eps=self.observer.eps,
+            channel_dim=self.num_neurons if want_channel else None,
+        ).to(self.observer.running_min.device)
+
     def _lsq_init_from_observer(self) -> None:
         with torch.no_grad():
             scale, zp = self.observer.get_scale_and_zero_point()
@@ -556,8 +575,9 @@ class FAILIF(nn.Module):
                 v_pre_fp32 = v_pre_c.detach()
                 if v_pre_fp32.dtype != torch.float32:
                     v_pre_fp32 = v_pre_fp32.to(torch.float32)
-                step_mins = v_pre_fp32.amin(dim=(0, 2))
-                step_maxes = v_pre_fp32.amax(dim=(0, 2))
+                red = (0,) if self.observer.per_channel else (0, 2)
+                step_mins = v_pre_fp32.amin(dim=red)
+                step_maxes = v_pre_fp32.amax(dim=red)
                 self.observer.update_stats_sequence(step_mins, step_maxes)
 
             spike_chunks.append(spike_c)
@@ -582,6 +602,16 @@ class FAILIF(nn.Module):
 # =========================================================================
 # Model-wide helpers
 # =========================================================================
+
+
+def set_observer_scope(model: nn.Module, scope: str) -> int:
+    """Set the observer scope ("tensor" | "channel") on every :class:`FAILIF`."""
+    n = 0
+    for m in model.modules():
+        if isinstance(m, FAILIF):
+            m.set_observer_scope(scope)
+            n += 1
+    return n
 
 
 def enable_lsq(model: nn.Module, init_steps: int = 1) -> int:
