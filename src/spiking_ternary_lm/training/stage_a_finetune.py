@@ -100,6 +100,11 @@ class StageAArgs:
     # Python reference (best PPL, ~2x slower), ``0`` calls once per
     # sequence (fastest, stalest grid). ``-1`` keeps the module default.
     lif_seq_chunk: int = -1
+    # Reset the recurrent state (WKV aa/bb/pp, LIF membranes, token-shift)
+    # every N optimizer steps. 0 = never (DEC-2 single-epoch streaming:
+    # state carried across sequences, reset once at the start). 1 = every
+    # sequence is independent. Diagnostic for state-drift instabilities.
+    reset_state_every: int = 0
 
 
 def make_param_groups(model: SpikingTernaryRWKV, args: StageAArgs) -> list[dict]:
@@ -307,6 +312,8 @@ def train(args: StageAArgs) -> int:
         x = x.to(device, non_blocking=True)
         y = y.to(device, non_blocking=True)
         model.detach_state()  # bound BPTT memory between training windows
+        if args.reset_state_every > 0 and micro % (args.reset_state_every * args.grad_accum) == 0:
+            model.reset_state()
         hook.enabled = step % args.log_every == 0
         # Autocast wraps ONLY the forward + loss. backward inherits the
         # dtype graph automatically and gradients accumulate into FP32
