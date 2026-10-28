@@ -99,6 +99,9 @@ class BitLinear(nn.Module):
         # False ⇒ plain FP linear on the shadow weight (DECISIONS #15 rungs
         # 0-1: the converted student must reproduce the teacher exactly).
         self.quantize = True
+        # Progressive ternarization (DECISIONS #15 plan B (a)): the forward
+        # uses ``w + quant_mix * (Q(w) - w)``; 1.0 = fully ternary.
+        self.quant_mix = 1.0
 
     # -- public helpers ---------------------------------------------------------
 
@@ -183,6 +186,8 @@ class BitLinear(nn.Module):
         scale_fp32 = groups.float().abs().mean(dim=-1, keepdim=True).clamp(min=self.eps)
         scale = scale_fp32.to(groups.dtype)
         w_quant = ste_quantize_ternary(groups, scale).view_as(w)
+        if self.quant_mix < 1.0:
+            w_quant = w + self.quant_mix * (w_quant - w)
         # Match input dtype for the matmul. The shadow's dtype is the
         # "weight precision"; the activation dtype drives the matmul.
         w_quant = w_quant.to(x.dtype)
@@ -195,6 +200,13 @@ class BitLinear(nn.Module):
             f"bias={self.bias is not None}, group_size={self.group_size}, "
             f"weight_dtype={self.weight_dtype}"
         )
+
+
+def set_quant_mix(model: nn.Module, mix: float) -> None:
+    """Set the progressive-ternarization blend on every :class:`BitLinear`."""
+    for m in model.modules():
+        if isinstance(m, BitLinear):
+            m.quant_mix = float(mix)
 
 
 def set_weight_quant(model: nn.Module, enabled: bool) -> int:

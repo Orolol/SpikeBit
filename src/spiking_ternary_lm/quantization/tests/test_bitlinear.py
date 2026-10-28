@@ -107,3 +107,18 @@ def test_forward_integer_matches_dequantized(qmin, qmax, zp):
     folded = bl.forward_integer(q, scale, zero_point)
     dequant = bl(scale * (q - zero_point))
     assert torch.allclose(folded, dequant, rtol=1e-5, atol=1e-4)
+
+
+def test_quant_mix_blends_fp_and_ternary_with_identity_gradient():
+    """Progressive ternarization (DECISIONS #15 plan B): 0 = FP, 1 = ternary."""
+    torch.manual_seed(0)
+    bl = BitLinear(64, 16, group_size=16)
+    x = torch.randn(4, 64)
+    fp = F.linear(x, bl.shadow_weight)
+    ternary = bl(x)
+    bl.quant_mix = 0.0
+    assert torch.allclose(bl(x), fp, atol=1e-6)
+    bl.quant_mix = 0.25
+    assert torch.allclose(bl(x), fp + 0.25 * (ternary - fp), atol=1e-5)
+    bl(x).sum().backward()
+    assert torch.allclose(bl.shadow_weight.grad, x.sum(0).expand(16, 64), atol=1e-5)

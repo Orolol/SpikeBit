@@ -39,7 +39,7 @@ from spiking_ternary_lm.layers.spiking_rwkv import SpikingRWKVTimeMix
 from spiking_ternary_lm.model.config import SpikingTernaryRWKVConfig
 from spiking_ternary_lm.model.model import SpikingTernaryRWKV
 from spiking_ternary_lm.neurons.fai_lif import FAILIF
-from spiking_ternary_lm.quantization.bitlinear import BitLinear
+from spiking_ternary_lm.quantization.bitlinear import BitLinear, set_quant_mix
 from spiking_ternary_lm.training.data import build_train_eval_loaders, tokenize_tinystories
 from spiking_ternary_lm.training.schedules import linear_warmup_cosine
 from spiking_ternary_lm.utils.logging import JsonlMetricsWriter, get_logger
@@ -148,6 +148,10 @@ class StageAArgs:
     # Final eval on the DECISIONS #15 protocol (eval tail, seq 128, 1 M
     # tokens, stateless) instead of the full split at the training seq_len.
     protocol_eval: bool = False
+    # Progressive ternarization (DECISIONS #15 plan B (a)): the weight blend
+    # ramps linearly from FP to ternary over this fraction of total_steps.
+    # 0 = ternary from the first step.
+    ternary_ramp_frac: float = 0.0
 
 
 def make_param_groups(model: SpikingTernaryRWKV, args: StageAArgs) -> list[dict]:
@@ -421,6 +425,8 @@ def train(args: StageAArgs) -> int:
                     n_frozen += 1
             LOG.info("step %d: froze %d FAI-LIF observers", step, n_frozen)
         hook.enabled = step % args.log_every == 0
+        if args.ternary_ramp_frac > 0:
+            set_quant_mix(model, min(1.0, step / (args.ternary_ramp_frac * args.total_steps)))
         # Autocast wraps ONLY the forward + loss. backward inherits the
         # dtype graph automatically and gradients accumulate into FP32
         # leaf .grad buffers; the optimizer.step() runs outside the
