@@ -133,3 +133,9 @@ evening; the runs started before sign-off count): rung-1 seed 1 at the
 selected LR, then the rung-2 sweep with KL to the selected rung-1 seed-0
 run, runs `runs/ladder/rung{1,2}c_*`. The warm-trained `rung1_lr*_s0` runs
 stay as the record of the flaw.
+
+**Rung 1 result.** 3e-3 (train CE 1.656, PPL 5.08) does not beat 1e-3, so the
+selected LR is **1e-3**. Seed 0 (`rung1c_lr1e-3_s0`): PPL 5.005; seed 1
+(`rung1c_lr1e-3_s1`, disjoint text): PPL 4.967. **Reference = 4.986**
+(mean of the two seeds), seed spread 0.8 %, so the noise rule is set by its
+5 % floor. KL teacher for rungs ≥ 2: `checkpoints/ladder/rung1c_lr1e-3_s0/final.pt`.
