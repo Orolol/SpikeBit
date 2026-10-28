@@ -31,6 +31,9 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
+from spiking_ternary_lm.conversion.rwkv_loader import load_rwkv4_teacher
+from spiking_ternary_lm.conversion.swap_layers import load_teacher_into_student
+from spiking_ternary_lm.eval.perplexity import protocol_perplexity
 from spiking_ternary_lm.layers.spiking_ffn import SpikingRWKVChannelMix
 from spiking_ternary_lm.layers.spiking_rwkv import SpikingRWKVTimeMix
 from spiking_ternary_lm.model.config import SpikingTernaryRWKVConfig
@@ -127,6 +130,24 @@ class StageAArgs:
     # comes from an unrelated chunk). Kept off by default for comparability
     # with the 2026-10-28 reference runs.
     contiguous_rows: bool = False
+    # --- Stage A ladder (DECISIONS #15) ---------------------------------
+    # Build the student from this HF teacher (conversion in memory) instead
+    # of loading ``init_checkpoint``. "" = use ``init_checkpoint``.
+    teacher_id: str = ""
+    # Override the BitLinear weights: "" keeps the config's, else "ternary"
+    # or "none" (FP shadow weights).
+    weight_quant: str = ""
+    # Keep the teacher's channel-mix relu² in front of the FFN FAI-LIF.
+    ffn_relu_sq: bool = False
+    # Logit distillation from a student-format checkpoint (rung 1 seed 0):
+    # loss = CE + distill_weight * T^2 * KL(teacher || student) at T =
+    # distill_temperature. The logged "loss" stays the CE.
+    distill_checkpoint: str = ""
+    distill_weight: float = 1.0
+    distill_temperature: float = 1.0
+    # Final eval on the DECISIONS #15 protocol (eval tail, seq 128, 1 M
+    # tokens, stateless) instead of the full split at the training seq_len.
+    protocol_eval: bool = False
 
 
 def make_param_groups(model: SpikingTernaryRWKV, args: StageAArgs) -> list[dict]:
@@ -248,10 +269,19 @@ def train(args: StageAArgs) -> int:
         if free_gb < 4.0:
             LOG.warning("low GPU memory (< 4 GB); Stage A may OOM")
 
-    # --- Load init checkpoint ---------------------------------------
-    LOG.info("loading init checkpoint: %s", args.init_checkpoint)
-    ckpt = torch.load(args.init_checkpoint, map_location="cpu", weights_only=False)
-    cfg = SpikingTernaryRWKVConfig(**ckpt["config"])
+    # --- Load init checkpoint (or convert the teacher in memory) ------
+    teacher_info = None
+    if args.teacher_id:
+        LOG.info("building the student from teacher %s", args.teacher_id)
+        teacher_info = load_rwkv4_teacher(args.teacher_id)
+        cfg = SpikingTernaryRWKVConfig(
+            vocab_size=teacher_info.vocab_size, hidden_size=teacher_info.hidden_size,
+            n_layers=teacher_info.n_layers, ffn_dim=teacher_info.ffn_dim,
+        )
+    else:
+        LOG.info("loading init checkpoint: %s", args.init_checkpoint)
+        ckpt = torch.load(args.init_checkpoint, map_location="cpu", weights_only=False)
+        cfg = SpikingTernaryRWKVConfig(**ckpt["config"])
     if args.weight_dtype:
         dtype_map = {"float32": torch.float32, "bfloat16": torch.bfloat16}
         if args.weight_dtype not in dtype_map:
@@ -261,8 +291,8 @@ def train(args: StageAArgs) -> int:
             LOG.info("overriding weight_dtype: %s -> %s", cfg.weight_dtype, new_dtype)
             cfg.weight_dtype = new_dtype
     if args.act_quant:
-        if args.act_quant not in ("minmax", "lsq"):
-            raise ValueError(f"--act-quant must be minmax or lsq; got {args.act_quant}")
+        if args.act_quant not in ("minmax", "lsq", "none"):
+            raise ValueError(f"--act-quant must be minmax, lsq or none; got {args.act_quant}")
         LOG.info("overriding act_quant: %s -> %s", getattr(cfg, "act_quant", "minmax"), args.act_quant)
         cfg.act_quant = args.act_quant
         cfg.lsq_init_steps = int(args.lsq_init_steps)
@@ -277,10 +307,23 @@ def train(args: StageAArgs) -> int:
             getattr(cfg, "observer_momentum", 0.01), args.observer_momentum,
         )
         cfg.observer_momentum = float(args.observer_momentum)
+    if args.weight_quant:
+        if args.weight_quant not in ("ternary", "none"):
+            raise ValueError(f"--weight-quant must be ternary or none; got {args.weight_quant}")
+        LOG.info("overriding weight_quant: %s -> %s", getattr(cfg, "weight_quant", "ternary"), args.weight_quant)
+        cfg.weight_quant = args.weight_quant
+    if args.ffn_relu_sq:
+        LOG.info("ffn_relu_sq: the channel-mix keeps the teacher's relu²")
+        cfg.ffn_relu_sq = True
     model = SpikingTernaryRWKV(cfg)
-    missing, unexpected = model.load_state_dict(ckpt["model"], strict=False)
-    if missing or unexpected:
-        LOG.warning("state_dict gaps: missing=%d unexpected=%d", len(missing), len(unexpected))
+    if teacher_info is not None:
+        report = load_teacher_into_student(teacher_info, model, strict=True)
+        LOG.info("assigned %d teacher tensors", len(report.assigned))
+        del teacher_info
+    else:
+        missing, unexpected = model.load_state_dict(ckpt["model"], strict=False)
+        if missing or unexpected:
+            LOG.warning("state_dict gaps: missing=%d unexpected=%d", len(missing), len(unexpected))
     if args.lif_seq_chunk >= 0:
         n_lif = 0
         for m in model.modules():
@@ -291,6 +334,16 @@ def train(args: StageAArgs) -> int:
     model.to(device)
     LOG.info("model: %d trainable params (%.1f M)", model.num_parameters(), model.num_parameters() / 1e6)
 
+    distill_model = None
+    if args.distill_checkpoint:
+        LOG.info("distillation teacher: %s (weight %.2f, T %.2f)",
+                 args.distill_checkpoint, args.distill_weight, args.distill_temperature)
+        dckpt = torch.load(args.distill_checkpoint, map_location="cpu", weights_only=False)
+        distill_model = SpikingTernaryRWKV(SpikingTernaryRWKVConfig(**dckpt["config"]))
+        distill_model.load_state_dict(dckpt["model"])
+        distill_model.eval().requires_grad_(False).to(device)
+        del dckpt
+
     # --- Data --------------------------------------------------------
     LOG.info("tokenizing TinyStories (cached after first run)...")
     corpus = tokenize_tinystories(
@@ -300,7 +353,7 @@ def train(args: StageAArgs) -> int:
     train_loader, eval_loader = build_train_eval_loaders(
         corpus, seq_len=args.seq_len, batch_size=args.batch_size,
         eval_fraction=args.eval_fraction, shuffle_train=False,
-        contiguous_rows=args.contiguous_rows,
+        contiguous_rows=args.contiguous_rows, seed=args.seed,
     )
 
     # --- Optimizer ---------------------------------------------------
@@ -331,6 +384,8 @@ def train(args: StageAArgs) -> int:
     # --- Loop --------------------------------------------------------
     model.train()
     model.reset_state()  # spec: reset only at start
+    if distill_model is not None:
+        distill_model.reset_state()
     writer = JsonlMetricsWriter(args.metrics_path)
     Path(args.out_dir).mkdir(parents=True, exist_ok=True)
     Path(args.metrics_path).parent.mkdir(parents=True, exist_ok=True)
@@ -341,6 +396,7 @@ def train(args: StageAArgs) -> int:
     optimizer.zero_grad(set_to_none=True)
     base_lrs = [g["lr"] for g in optimizer.param_groups]
     running_loss = 0.0
+    running_kl = 0.0
 
     train_iter = iter(train_loader)
     while step < args.total_steps:
@@ -355,6 +411,8 @@ def train(args: StageAArgs) -> int:
         model.detach_state()  # bound BPTT memory between training windows
         if args.reset_state_every > 0 and micro % (args.reset_state_every * args.grad_accum) == 0:
             model.reset_state()
+            if distill_model is not None:
+                distill_model.reset_state()
         if args.freeze_observers_at > 0 and step == args.freeze_observers_at and micro % args.grad_accum == 0:
             n_frozen = 0
             for m in model.modules():
@@ -371,11 +429,22 @@ def train(args: StageAArgs) -> int:
             device_type="cuda", dtype=autocast_dtype, enabled=use_autocast
         ):
             logits = model(x)
-            loss = F.cross_entropy(
-                logits.reshape(-1, cfg.vocab_size), y.reshape(-1)
-            ) / args.grad_accum
+            ce = F.cross_entropy(logits.reshape(-1, cfg.vocab_size), y.reshape(-1))
+            loss = ce
+            if distill_model is not None:
+                with torch.no_grad():
+                    t_logits = distill_model(x)
+                temp = args.distill_temperature
+                kl = F.kl_div(
+                    F.log_softmax(logits.float().reshape(-1, cfg.vocab_size) / temp, dim=-1),
+                    F.log_softmax(t_logits.float().reshape(-1, cfg.vocab_size) / temp, dim=-1),
+                    log_target=True, reduction="batchmean",
+                ) * temp * temp
+                loss = ce + args.distill_weight * kl
+                running_kl += float(kl.detach())
+            loss = loss / args.grad_accum
         loss.backward()
-        running_loss += float(loss.detach()) * args.grad_accum
+        running_loss += float(ce.detach())
         micro += 1
 
         if micro % args.grad_accum == 0:
@@ -396,7 +465,9 @@ def train(args: StageAArgs) -> int:
             optimizer.step()
             optimizer.zero_grad(set_to_none=True)
             avg_loss = running_loss / args.grad_accum
+            avg_kl = running_kl / args.grad_accum
             running_loss = 0.0
+            running_kl = 0.0
 
             if step % args.log_every == 0:
                 metrics: dict[str, object] = {
@@ -409,6 +480,8 @@ def train(args: StageAArgs) -> int:
                     "grad_norms": grad_norms,
                     "grad_norm_total": total_grad_norm,
                 }
+                if distill_model is not None:
+                    metrics["kl"] = avg_kl
                 writer.log(step, **{k: v for k, v in metrics.items() if k != "step"})
                 # Pick out one representative spike rate per layer-type.
                 samples = list(hook.stats.items())[:4]
@@ -425,6 +498,8 @@ def train(args: StageAArgs) -> int:
                 )
                 writer.log(step, eval_loss=eval_loss, eval_ppl=math.exp(eval_loss))
                 LOG.info("step %5d | eval loss %.4f (ppl %.1f)", step, eval_loss, math.exp(eval_loss))
+                if distill_model is not None:
+                    distill_model.reset_state()  # the student resumes from a fresh state too
 
             if step > 0 and step % args.ckpt_every == 0:
                 ckpt_path = Path(args.out_dir) / f"step_{step:06d}.pt"
@@ -434,7 +509,15 @@ def train(args: StageAArgs) -> int:
             step += 1
 
     # Final ckpt + eval.
-    eval_loss = evaluate(model, eval_loader, device, cfg.vocab_size)
+    if args.protocol_eval:
+        res = protocol_perplexity(model, corpus, device)
+        eval_loss = res["loss"]
+        writer.log(step, protocol_loss=eval_loss, protocol_ppl=res["perplexity"],
+                   protocol_tokens=res["n_tokens"])
+        LOG.info("PROTOCOL | %d tokens, seq 128, stateless: ppl %.3f",
+                 res["n_tokens"], res["perplexity"])
+    else:
+        eval_loss = evaluate(model, eval_loader, device, cfg.vocab_size)
     LOG.info("FINAL | step %d eval loss %.4f (ppl %.1f)",
              step, eval_loss, math.exp(eval_loss))
     final_path = Path(args.out_dir) / "final.pt"

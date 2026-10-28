@@ -153,7 +153,14 @@ class PackedTokenDataset(IterableDataset):
             per_row = len(starts) // B
             # Row b owns chunks [b*per_row, (b+1)*per_row); interleave so
             # the DataLoader's batch n is (chunk n of row 0, ..., of row B-1).
-            starts = [starts[b * per_row + k] for k in range(per_row) for b in range(B)]
+            # The seed shifts every row by seed/8 of its region, so seeds 0-7
+            # read disjoint text for runs up to per_row/8 steps (DECISIONS
+            # #15 seeds; seed 0 keeps the historical layout).
+            shift = (self.seed * per_row) // 8
+            starts = [
+                starts[b * per_row + (k + shift) % per_row]
+                for k in range(per_row) for b in range(B)
+            ]
         for s in starts:
             window = ids[s : s + self.seq_len + 1].astype(np.int64)
             x = torch.from_numpy(window[:-1])
