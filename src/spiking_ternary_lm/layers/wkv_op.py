@@ -46,9 +46,11 @@ def _load_extension():
         return None
     try:
         from torch.utils.cpp_extension import load
-        # Build for RTX 5090 (sm_120) by default; allow override via env.
-        arch = os.environ.get("TORCH_CUDA_ARCH_LIST", "12.0")
-        os.environ["TORCH_CUDA_ARCH_LIST"] = arch
+        # Build for the GPU we are running on (sm_120 on the 5090, sm_75 on
+        # a Colab T4, ...); allow override via env.
+        if "TORCH_CUDA_ARCH_LIST" not in os.environ:
+            major, minor = torch.cuda.get_device_capability()
+            os.environ["TORCH_CUDA_ARCH_LIST"] = f"{major}.{minor}"
         _EXT = load(
             name="spikebit_wkv_cuda",
             sources=[str(_CSRC_DIR / "wkv_cuda.cu")],
