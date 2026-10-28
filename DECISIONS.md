@@ -869,3 +869,37 @@ on the current design.
 a4.8); SpikeBit's contribution has to be the spiking/recurrent reading
 (rung 4) or the hardware path. If 4a shows no energy advantage and 4b no
 gain over rung 3, the project's claim should be revised, not the metric.
+
+---
+
+## Decision #16 — Ladder training regime: stateless windows matched to the eval (proposed 2026-10-28)
+
+**Status:** proposed, awaiting Gaétan. Would amend the protocol of DEC-15
+(training part only; the eval protocol is unchanged). Ladder runs made under
+it before sign-off are provisional.
+
+**Why.** DEC-15 trains with the recurrent state carried across contiguous
+rows (64 × 32) and evaluates stateless per 128-token window. The rung-1 sweep
+showed the two conflict (`results/stage_a_ladder.md`): the models learn to
+rely on a warm state, the more so at higher LR, and the pre-registered LR
+rule (lowest train CE) ranks the LRs in the reverse order of the protocol
+PPL (3e-4: best train CE, worst protocol PPL 10.7; 3e-5: 8.9). The cold
+penalty persists deep into the window (0.27–0.53 nats at positions 32–127).
+Trained stateless at seq 128 × 16 (same tokens per step and in total), the
+same sweep gives protocol PPL 5.0–6.3 with the same ranking as the train CE.
+
+**Proposal.**
+
+  1. Every trained rung: seq 128 × batch 16, state reset before every
+     window (`--reset-state-every 1`), 10 k steps (20.5 M tokens); the rest
+     of DEC-15 unchanged (eval, seeds with disjoint text, noise rule, KL).
+  2. LR selection as pre-registered (lowest train CE over steps
+     9 000–9 999 at seed 0), with one addition: if the best LR is on the
+     edge of the grid, the grid is extended by one point on that side.
+  3. A streaming (warm) eval is reported next to the protocol PPL at every
+     rung (`scripts/_diagnose_state_regime.py`) as a secondary number; the
+     spiking/streaming reading of DEC-2 can be studied on it at rung 4b.
+
+**Alternative not chosen.** Keep the stateful training and make the eval
+streaming: consistent too, but it changes the primary metric after results
+and the teacher reference (zero-shot 13.98 cold, 15.41 warm).

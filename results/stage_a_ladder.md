@@ -114,3 +114,20 @@ The ladder is paused on this point (decision for Gaétan). As a diagnostic,
 not a replacement, the same sweep runs with stateless training matched to
 the eval: seq 128 × batch 16 (same 2 048 tokens per step), state reset every
 step (`--reset-state-every 1`), runs `runs/ladder/rung1c_lr{LR}_s0`.
+
+**Diagnostic sweep, stateless training matched to the eval** (18:19–18:42,
+commit `88b28dd`): seq 128 × batch 16, `--reset-state-every 1`.
+
+| LR | train CE, steps 9 000–9 999 | PPL cold (protocol) |
+|---|---|---|
+| 3e-5 | 1.855 | 6.26 |
+| 1e-4 | 1.756 | 5.66 |
+| 3e-4 | 1.681 | 5.24 |
+| 1e-3 | **1.640** | **5.01** |
+
+Train CE and protocol PPL now rank the LRs the same way, and every LR beats
+the best warm-trained model on the protocol (5.0–6.3 vs 8.9). The best LR
+sits on the edge of the grid, so 3e-3 is added (decided before its result).
+The ladder continues provisionally under this regime (DECISIONS #16,
+proposed): rung-1 seed 1 at the selected LR, then the rung-2 sweep with KL
+to the selected rung-1 seed-0 run, runs `runs/ladder/rung{1,2}c_*`.
