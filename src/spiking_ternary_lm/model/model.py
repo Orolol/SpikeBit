@@ -30,7 +30,12 @@ from torch import Tensor, nn
 
 from spiking_ternary_lm.layers.block import RWKVBlock
 from spiking_ternary_lm.model.config import SpikingTernaryRWKVConfig
-from spiking_ternary_lm.neurons.fai_lif import enable_lsq, set_observer_scope
+from spiking_ternary_lm.neurons.fai_lif import (
+    disable_act_quant,
+    enable_lsq,
+    set_observer_scope,
+)
+from spiking_ternary_lm.quantization.bitlinear import set_weight_quant
 
 
 class SpikingTernaryRWKV(nn.Module):
@@ -53,6 +58,7 @@ class SpikingTernaryRWKV(nn.Module):
                     signed_kv=config.signed_kv,
                     spiking_r=config.spiking_r,
                     init_v_thr=getattr(config, "init_v_thr", 0.5),
+                    ffn_relu_sq=getattr(config, "ffn_relu_sq", False),
                 )
                 for i in range(config.n_layers)
             ]
@@ -61,10 +67,18 @@ class SpikingTernaryRWKV(nn.Module):
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
         if getattr(config, "observer_scope", "tensor") != "tensor":
             set_observer_scope(self, config.observer_scope)
-        if getattr(config, "act_quant", "minmax") == "lsq":
+        act_quant = getattr(config, "act_quant", "minmax")
+        if act_quant == "lsq":
             enable_lsq(self, init_steps=getattr(config, "lsq_init_steps", 1))
-        elif getattr(config, "act_quant", "minmax") != "minmax":
-            raise ValueError(f"unknown act_quant {config.act_quant!r} (minmax | lsq)")
+        elif act_quant == "none":
+            disable_act_quant(self)
+        elif act_quant != "minmax":
+            raise ValueError(f"unknown act_quant {act_quant!r} (minmax | lsq | none)")
+        weight_quant = getattr(config, "weight_quant", "ternary")
+        if weight_quant == "none":
+            set_weight_quant(self, False)
+        elif weight_quant != "ternary":
+            raise ValueError(f"unknown weight_quant {weight_quant!r} (ternary | none)")
         if config.tie_word_embeddings:
             self.lm_head.weight = self.embed.weight
 

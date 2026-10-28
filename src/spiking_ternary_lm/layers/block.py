@@ -31,6 +31,7 @@ class RWKVBlock(nn.Module):
         signed_kv: bool = True,
         spiking_r: bool = True,
         init_v_thr: float = 0.5,  # ignored by observer-based path
+        ffn_relu_sq: bool = False,
     ) -> None:
         super().__init__()
         self.hidden_size = int(hidden_size)
@@ -59,6 +60,7 @@ class RWKVBlock(nn.Module):
             weight_dtype=weight_dtype,
             observer_momentum=observer_momentum,
             init_v_thr=init_v_thr,
+            relu_sq=ffn_relu_sq,
         )
 
     def forward(self, x: Tensor) -> Tensor:

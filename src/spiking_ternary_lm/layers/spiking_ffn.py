@@ -15,7 +15,9 @@ Spiking-ternary substitutions (spec):
   * ``W_k`` (hidden → ffn_dim), ``W_v`` (ffn_dim → hidden), ``W_r``
     (hidden → hidden): all :class:`BitLinear` ternary.
   * ``squared_relu`` on K → replaced by :class:`FAILIF` (the integer
-    spike count IS the up-projected nonlinearity).
+    spike count IS the up-projected nonlinearity). With ``relu_sq=True``
+    the teacher's ``relu(.)**2`` is kept and FAI-LIF quantizes its output
+    instead (DECISIONS #15: the legacy replacement drops the nonlinearity).
   * Final ``v`` is followed by another :class:`FAILIF` so the value path
     is fully integer-spike before being multiplied by the gate.
   * ``sigmoid(r)`` kept as FP (cheap, no need to quantize a 0-1 gate).
@@ -50,6 +52,9 @@ class SpikingRWKVChannelMix(nn.Module):
         Used by the init scheme.
     bits, group_size, weight_dtype, init_v_thr:
         Same semantics as in :class:`SpikingRWKVTimeMix`.
+    relu_sq:
+        Apply the teacher's ``relu(.)**2`` before ``lif_k``. Default False
+        (legacy layout).
     """
 
     def __init__(
@@ -64,9 +69,11 @@ class SpikingRWKVChannelMix(nn.Module):
         observer_momentum: float = 0.01,
         # See SpikingRWKVTimeMix: ignored by the observer-based FAILIF.
         init_v_thr: float = 0.5,
+        relu_sq: bool = False,
     ) -> None:
         super().__init__()
         self.hidden_size = int(hidden_size)
+        self.relu_sq = bool(relu_sq)
         self.ffn_dim = int(ffn_dim) if ffn_dim is not None else 4 * self.hidden_size
         self.layer_idx = int(layer_idx)
         self.n_layers = int(n_layers)
@@ -134,6 +141,11 @@ class SpikingRWKVChannelMix(nn.Module):
 
     # -- forward ---------------------------------------------------------------
 
+    def _up(self, xk: Tensor) -> Tensor:
+        """Up-projection, followed by the teacher's ``relu²`` if kept."""
+        k = self.W_k(xk)
+        return torch.relu(k).square() if self.relu_sq else k
+
     def _step(self, x_t: Tensor) -> Tensor:
         x_prev = self.x_prev.to(x_t.dtype)
         mu_k = self.mu_k.to(x_t.dtype)
@@ -141,7 +153,7 @@ class SpikingRWKVChannelMix(nn.Module):
         xk = mu_k * x_t + (1.0 - mu_k) * x_prev
         xr = mu_r * x_t + (1.0 - mu_r) * x_prev
 
-        k = self.lif_k(self.W_k(xk))  # (B, ffn_dim) spike counts
+        k = self.lif_k(self._up(xk))  # (B, ffn_dim) spike counts
         v = self.lif_v(self.W_v(k))   # (B, hidden) spike counts
         r = torch.sigmoid(self.W_r(xr))  # (B, hidden) FP gate in (0, 1)
 
@@ -169,7 +181,7 @@ class SpikingRWKVChannelMix(nn.Module):
         xk = mu_k * x + (1.0 - mu_k) * x_shifted
         xr = mu_r * x + (1.0 - mu_r) * x_shifted
 
-        k = self.lif_k(self.W_k(xk))      # (B, T, ffn_dim) integer spikes
+        k = self.lif_k(self._up(xk))      # (B, T, ffn_dim) integer spikes
         v = self.lif_v(self.W_v(k))       # (B, T, hidden)  integer spikes
         r = torch.sigmoid(self.W_r(xr))   # (B, T, hidden)  FP gate
 

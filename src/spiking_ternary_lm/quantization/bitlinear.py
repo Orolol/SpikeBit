@@ -96,6 +96,9 @@ class BitLinear(nn.Module):
             self.bias = nn.Parameter(b.to(weight_dtype))
         else:
             self.register_parameter("bias", None)
+        # False ⇒ plain FP linear on the shadow weight (DECISIONS #15 rungs
+        # 0-1: the converted student must reproduce the teacher exactly).
+        self.quantize = True
 
     # -- public helpers ---------------------------------------------------------
 
@@ -143,9 +146,36 @@ class BitLinear(nn.Module):
             ternary = (sign * mask).view(self.out_features, self.in_features)
             return ternary, scale.squeeze(-1)
 
+    def forward_integer(self, q: Tensor, scale: Tensor, zero_point: Tensor) -> Tensor:
+        """Folded integer path: same output as ``forward(scale * (q - zero_point))``.
+
+        ``q`` holds integer activations (stored as FP), ``scale`` and
+        ``zero_point`` are the per-tensor grid of the FAI-LIF that produced
+        them. The activation scale is folded into the per-group weight scales
+        and the zero-point into an FP bias, so the only per-element work is a
+        ternary × integer accumulation per group (DECISIONS #15 rung 0, the
+        deployment convention). Per-tensor grids only: a per-channel scale
+        does not fold into row-group scales.
+        """
+        if scale.numel() != 1 or zero_point.numel() != 1:
+            raise ValueError("forward_integer folds per-tensor grids only")
+        ternary, alpha = self.pack_weights()  # (out, in) int8, (out, G) FP32
+        t = ternary.view(self.out_features, self.num_groups, self.group_size).to(torch.float32)
+        q_groups = q.to(torch.float32).reshape(*q.shape[:-1], self.num_groups, self.group_size)
+        acc = torch.einsum("...gk,ogk->...og", q_groups, t)  # exact integer sums
+        s = scale.to(torch.float32).reshape(())
+        y = (acc * (s * alpha)).sum(-1)
+        y = y - s * zero_point.to(torch.float32).reshape(()) * (t.sum(-1) * alpha).sum(-1)
+        if self.bias is not None:
+            y = y + self.bias.to(torch.float32)
+        return y.to(q.dtype)
+
     # -- forward ----------------------------------------------------------------
 
     def forward(self, x: Tensor) -> Tensor:
+        if not self.quantize:
+            bias = self.bias.to(x.dtype) if self.bias is not None else None
+            return F.linear(x, self.shadow_weight.to(x.dtype), bias)
         w = self.shadow_weight
         # Group view: (out, num_groups, group_size).
         groups = w.view(self.out_features, self.num_groups, self.group_size)
@@ -165,3 +195,13 @@ class BitLinear(nn.Module):
             f"bias={self.bias is not None}, group_size={self.group_size}, "
             f"weight_dtype={self.weight_dtype}"
         )
+
+
+def set_weight_quant(model: nn.Module, enabled: bool) -> int:
+    """Turn ternary quantization on or off in every :class:`BitLinear`."""
+    n = 0
+    for m in model.modules():
+        if isinstance(m, BitLinear):
+            m.quantize = bool(enabled)
+            n += 1
+    return n

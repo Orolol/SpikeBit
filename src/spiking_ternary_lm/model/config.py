@@ -30,8 +30,15 @@ class SpikingTernaryRWKVConfig:
     # FAI-LIF — see DECISIONS.md #6, #7, #9, Phase 3.5 spec).
     observer_momentum: float = 0.01
     # Activation quantizer for every FAI-LIF: "minmax" (observer-tracked,
-    # NSLLM-style) or "lsq" (learned step size, DECISIONS #14).
+    # NSLLM-style), "lsq" (learned step size, DECISIONS #14) or "none"
+    # (FAI-LIF is an identity: FP activations, rungs 0-2 of DECISIONS #15).
     act_quant: str = "minmax"
+    # BitLinear weights: "ternary" (default) or "none" (FP shadow weights,
+    # rungs 0-1 of DECISIONS #15).
+    weight_quant: str = "ternary"
+    # Keep the teacher's channel-mix ``relu(.)**2`` in front of the FFN
+    # FAI-LIF (DECISIONS #15). False = legacy layout, where FAI-LIF replaces it.
+    ffn_relu_sq: bool = False
     # MinMax observer scope: "tensor" (one grid per activation tensor, NSLLM)
     # or "channel" (one grid per neuron = per-neuron threshold, DECISIONS #14).
     observer_scope: str = "tensor"

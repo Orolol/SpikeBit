@@ -95,3 +95,15 @@ def test_bias_optional():
     x = torch.randn(2, 32)
     y = bl(x)
     assert y.shape == (2, 8)
+
+
+@pytest.mark.parametrize("qmin,qmax,zp", [(0, 15, 6.0), (-8, 7, -2.0), (0, 255, 0.0)])
+def test_forward_integer_matches_dequantized(qmin, qmax, zp):
+    """Folded integer path == BitLinear on the dequantized activation (DECISIONS #15)."""
+    torch.manual_seed(0)
+    bl = BitLinear(128, 48, group_size=32)
+    q = torch.randint(qmin, qmax + 1, (5, 7, 128)).to(torch.float32)
+    scale, zero_point = torch.tensor(0.0731), torch.tensor(zp)
+    folded = bl.forward_integer(q, scale, zero_point)
+    dequant = bl(scale * (q - zero_point))
+    assert torch.allclose(folded, dequant, rtol=1e-5, atol=1e-4)

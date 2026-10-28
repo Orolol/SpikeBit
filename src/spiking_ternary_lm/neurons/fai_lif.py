@@ -232,8 +232,9 @@ class FAILIF(nn.Module):
         # train mode (quantization grid frozen). Set by the trainer after a
         # warm-up to rule out grid drift as a source of late instability.
         self.observer_frozen = False
-        # Activation quantizer: "minmax" (observer-tracked grid, default) or
-        # "lsq" (learned step size + offset, see :meth:`enable_lsq`).
+        # Activation quantizer: "minmax" (observer-tracked grid, default),
+        # "lsq" (learned step size + offset, see :meth:`enable_lsq`) or
+        # "none" (identity: no quantization, no membrane; DECISIONS #15).
         self.act_quant = "minmax"
         self.lsq_init_steps = 1
         # Last integer spike tensor (LSQ mode only; output is dequantized).
@@ -400,6 +401,8 @@ class FAILIF(nn.Module):
             raise ValueError(
                 f"expected last dim {self.num_neurons}, got {x.shape[-1]} (full shape {x.shape})"
             )
+        if self.act_quant == "none":
+            return x
         # Sequence-shaped input ``(B, T, H)``: route to the fused CUDA
         # kernel when available. Falls back to a per-step loop on CPU /
         # if the kernel isn't loaded.
@@ -613,6 +616,16 @@ def set_observer_scope(model: nn.Module, scope: str) -> int:
     for m in model.modules():
         if isinstance(m, FAILIF):
             m.set_observer_scope(scope)
+            n += 1
+    return n
+
+
+def disable_act_quant(model: nn.Module) -> int:
+    """Turn every :class:`FAILIF` into an identity (FP activations)."""
+    n = 0
+    for m in model.modules():
+        if isinstance(m, FAILIF):
+            m.act_quant = "none"
             n += 1
     return n
 
