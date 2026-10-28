@@ -33,4 +33,41 @@ Logs: `runs/stage_a_full_4b/{pipeline.log,train.log,teacher_ppl.txt,eval.txt}`.
 
 **Teacher PPL** (measured 2026-10-28, same tail): **13.34** (loss 2.5906, 20 224 tokens) → success threshold: student PPL ≤ 14.0.
 
-**Results.** _pending_
+
+## Attempt 2 aborted: slow descent, root cause found (2026-10-28)
+
+Attempt 2 (`--lif-seq-chunk 8`, warmup 500, spec LRs, 0.18 s/step, GPU 82 %)
+reached train loss 14.5 / eval loss 15.5 at step 1000 — worse than uniform
+(ln 50277 = 10.8) — where the May runs were at 5.3. Killed at step 1100.
+Logs: `runs/stage_a_full_4b/aborted_chunk1/metrics_attempt2_fulleval.jsonl`
+(name is historical: it is the chunk-8 attempt).
+
+Short A/B series (300 steps, seed 0, 64×8, chunk 8 unless noted, 20k-example
+subset where noted — identical early trajectory to the full corpus),
+train loss at steps 0 / 100 / 200. May reference (`stage_a_midrun_fast_fp32`):
+46.2 / 13.4 / 7.1.
+
+| variant (`runs/ab_early/<name>`) | step 0 | step 100 | step 200 |
+|---|---|---|---|
+| phase35_wu500_full (attempt-2 config) | 53.6 | 35.7 | 24.3 |
+| phase35_wu150_full | 53.6 | 27.1 | 20.3 |
+| phase35_wu150_head0 (head frozen) | 53.6 | 32.4 | 28.0 |
+| calib_wu150_full (`stage_a_init_calibrated.pt`) | 53.6 | 29.0 | 21.9 |
+| phase35_wu150_20k (data subset) | 53.6 | 27.1 | 20.3 |
+| phase35_wu150_chunk0 (whole-seq kernel) | 44.7 | 26.2 | 19.1 |
+| phase35_wu150_chunk16 | 53.1 | 27.1 | 20.1 |
+| phase35_wu150_chunk2 | 50.4 | 26.9 | 21.4 |
+| seq128_b4 | 55.0 | 26.3 | 15.7 |
+| lr_x3 (all LRs ×3) | 53.6 | 11.7 | 7.2 |
+| lr_x10 (all LRs ×10) | 53.6 | 7.9 | 6.9 |
+| **lr_head_x10** (`--lr-embed-head 1e-3`, rest per spec) | 53.6 | **7.7** | **6.5** |
+
+Conclusion: not the warmup, init checkpoint, data, kernel chunking, batch
+shape, nor the Oct-28 perf patches (the pre-patch chunk-1 attempt was equally
+slow). The lever is the LM-head/embedding learning rate: at the spec value
+(1e-4) the FP head cannot re-adapt to the integer-spike hidden distribution
+fast enough (same mechanism as DECISIONS #9, where a frozen head gave a dead
+model). The May runs must have used a higher LR than the spec defaults; it
+was not recorded. Decision: full run uses `--lr-embed-head 1e-3`.
+
+**Results (attempt 3).** _pending_
