@@ -313,5 +313,7 @@ LSQ 4-bit warm: 4.562 vs 4.511 for rung 2 (1.011). The cold column also
 measures the hardware effect: the rung-2 checkpoints give 5.217 / 5.088 on the
 A100 vs 5.222 / 5.093 on the 5090 (0.1 %).
 
-**Verdict proposed** (DECISIONS #18): rung 3 passes at 4 bits with LSQ
-(1.033 ≤ 1.3) and fails with MinMax (1.95); 8 bits passes with MinMax.
+**Verdict** (DECISIONS #18, accepted 2026-10-29): rung 3 passes at 4 bits with
+LSQ (1.033 ≤ 1.3) and fails with MinMax (1.95); 8 bits passes with MinMax.
+**Rung 3 = LSQ, all-4-bit activations, PPL 5.328**, the reference of rungs 4a
+and 4b.

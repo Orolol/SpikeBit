@@ -955,7 +955,7 @@ included.
 
 ## Decision #18 — Rung 3 closes with LSQ as the activation quantizer (2026-10-29)
 
-**Status:** proposed, awaiting Gaétan. Decided after the rung-3 results; DEC-15
+**Status:** accepted by Gaétan on 2026-10-29. Decided after the rung-3 results; DEC-15
 pre-registers the LSQ vs MinMax comparison at rung 3 but not which quantizer
 the later rungs keep.
 
