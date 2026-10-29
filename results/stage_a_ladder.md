@@ -494,3 +494,62 @@ mean 4.624 vs 4.562 for rung 3 (1.014).
 **Verdict** (DEC-22 point 3): 1.012 ≤ 1.1, **rung 5 passes; Stage A's result
 is rung 5**: ternary weights and 4-bit activations at every BitLinear input,
 PPL 5.391, 1.081 × rung 1.
+
+## Budget ×2 diagnostic — the ladder replayed at 40 M tokens (DECISIONS #23, 2026-10-29)
+
+Runs `rung1x2_lr1e-3_s{0,1}` then `rung5x2_a4_s{0,1}` (bundle `81e6a84`,
+`colab/ladder_budget2x.py`, A100 40 GB, two at a time, 19:52–22:41 UTC): rung 1
+(LR 1e-3) and rung 5 (LR 3e-3) at 20 k steps of 128 × 16 (41 M tokens), warmup
+300, cosine over the 20 k steps, everything else as at 1×. Rung 5 ×2 distils
+from `rung1x2_lr1e-3_s0` (sha256 `01c01e3f…`, logged in its `pipeline.log`).
+The full test suite passed on the A100 at that commit. During warmup the
+×2 run of rung 1 seed 0 tracks its 1× run to 1e-3 nats (same text, same LR).
+
+| run | PPL seed 0 | PPL seed 1 | mean | seed spread | ×2 / ×1 |
+|---|---|---|---|---|---|
+| rung 1 ×2 | 4.694 | 4.650 | **4.672** | 0.9 % | −6.3 % (4.986) |
+| rung 5 ×2 | 5.005 | 4.905 | **4.955** | 2.0 % | −8.1 % (5.391) |
+
+  * **Ratio rung 1 ×2 / rung 5 ×2 = 94.3 %** (92.5 % at 1×). Rung 5 ×2 needed
+    ≤ 4.918; it is 0.75 % above.
+  * Gap PPL5 / PPL1 − 1: 8.1 % at 1×, 6.1 % at 2× (0.078 → 0.059 nats, a
+    quarter of it closed). The trainer's internal eval (a smaller sample)
+    shows the same at equal fractions of training: 0.081 nats at 60 % of the
+    1× run vs 0.058 at 60 % of the ×2 run, then a slow decrease (0.055 at
+    90 %) to a protocol gap of 0.059 (1×: 0.075 at 80 %, protocol 0.078).
+  * Across budgets, rung 5 ×2 (4.955) is 0.6 % below rung 1 ×1 (4.986). This
+    is not the DEC-23 comparison: rung 1 gains 6.3 % from the same doubling.
+  * Train CE over the last 1 000 steps: rung 5 ×2 1.604 / 1.630 (KL 0.126 /
+    0.142) vs 1.698 / 1.669 (KL 0.147 / 0.156) at 1×; rung 1 ×2 1.565 / 1.581
+    vs 1.640 / 1.604. Different text in that window at ×2, so indicative only.
+    Median grad norm 0.34 / 0.33 (0.39 / 0.35 at 1×); the maximum is at step
+    0, as at 1×.
+
+**Eval check** (`runs/ladder/analysis2x/check_quant_rung5x2.txt`, first 32
+windows of the eval tail): all 120 LIFs in LSQ mode with every output on its
+grid (`max |q − round(q)|` ≤ 2.8e-2, bf16 rounding); CE 1.304 / 1.304, and
+2.671 / 2.718 with FP activations on the same weights (1.396 / 1.400 →
+2.423 / 2.338 at 1×). The ×2 model is fitted to its grids at least as much
+as the 1× one.
+
+**Warm eval** (`runs/ladder/analysis2x/warm_cold_2x.txt`, 1 M tokens of the
+eval tail; cold reproduces the protocol PPL within 0.1 %):
+
+| run | cold | warm | CE at positions 32–127, cold / warm |
+|---|---|---|---|
+| rung 1 ×2, s0 / s1 | 4.689 / 4.646 | 4.411 / 4.414 | 1.416 / 1.485, 1.406 / 1.486 |
+| rung 5 ×2, s0 / s1 | 5.001 / 4.901 | 4.239 / 4.150 | 1.485 / 1.446, 1.465 / 1.425 |
+
+Warm, rung 5 ×2 is 5 % *below* rung 1 ×2 (4.194 vs 4.413). The FP reference
+gets worse late in a window when its state is carried across windows
+(positions 32–127: 1.41 cold, 1.49 warm); the quantized student gets better.
+Both were trained stateless (DEC-16). The rung-1 warm number was not measured
+at 1×, so whether this appears with the budget or was there before is open.
+Secondary; it does not enter the DEC-23 criterion.
+
+**Verdict** (DEC-23 point 3): 94.3 % < 95 %, **not budget-limited at 2×**.
+The miss (0.75 % PPL) is smaller than the rung-5 seed spread (2.0 %), so the
+data put rung 5 at the threshold at 2×, not clearly under it; the
+pre-registered verdict is the binary one. Doubling the budget closes a
+quarter of the gap. Stage A's result stays rung 5 at the protocol budget
+(DEC-23 point 4).

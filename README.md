@@ -30,7 +30,7 @@ All design decisions live in `DECISIONS.md` (numbered, immutable entries).
 
 ## Status (2026-10-29)
 
-Stage A was rebuilt as a measured ladder (DECISIONS #15–#21); results in
+Stage A was rebuilt as a measured ladder (DECISIONS #15–#23); results in
 `results/stage_a_ladder.md`. Protocol: last 1 % of TinyStories, seq 128,
 stateless windows, 1 M tokens; two seeds per rung.
 
@@ -46,7 +46,10 @@ stateless windows, 1 M tokens; two seeds per rung.
 
 Stage A's result is rung 5, at 92.5 % of rung 1 (DEC-1 target ≥ 95 %). Its
 spike reading: 2.8 × the accumulations of INT4 × ternary, on 70 % of the
-dense matmul MACs. Embeddings, LM head, norms, the WKV and the sigmoid gates
+dense matmul MACs. Diagnostic at 2 × the budget (DECISIONS #23): rung 1
+4.672, rung 5 4.955, i.e. 94.3 % (not budget-limited at 2× by the
+pre-registered rule, 0.75 % PPL short); the gap to rung 1 shrinks from 8.1 %
+to 6.1 %. Embeddings, LM head, norms, the WKV and the sigmoid gates
 stay FP (DECISIONS #2). Stage C and the Phase 6 ablations are code
 only, never run.
 
