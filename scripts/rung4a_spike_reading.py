@@ -9,6 +9,9 @@ consumer is a ternary BitLinear: time-mix ``lif_out`` -> ``W_o``, channel-mix
 ``sum 1{q_i != 0} * nnz(W[:, i])``, i.e. ``R``. Also checks on real counts
 that the spike reading gives the consumer's integer accumulations exactly,
 and reports which share of the matmul work per token takes LIF outputs.
+With ``act_quant_inputs`` (rung 5, DECISIONS #22) the five LIFs on the
+token-shift mixes are spike-native too (consumers ``W_r``, ``W_k``, ``W_v`` of
+the time-mix, ``W_k``, ``W_r`` of the channel-mix).
 
     uv run python scripts/rung4a_spike_reading.py rung3l_a4_s0 rung3l_a4_s1
 
@@ -30,6 +33,9 @@ dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 SEQ, N_WIN, B = 128, 256, 16
 SITES = ["time_mix.lif_k", "time_mix.lif_v", "time_mix.lif_out", "channel_mix.lif_k", "channel_mix.lif_v"]
 CONSUMER = {"time_mix.lif_out": "time_mix.W_o", "channel_mix.lif_k": "channel_mix.W_v"}
+INPUT_CONSUMER = {"time_mix.lif_xr": "time_mix.W_r", "time_mix.lif_xk": "time_mix.W_k",
+                  "time_mix.lif_xv": "time_mix.W_v", "channel_mix.lif_xk": "channel_mix.W_k",
+                  "channel_mix.lif_xr": "channel_mix.W_r"}
 ids = torch.from_numpy(protocol_eval_corpus(tokenize_tinystories(tokenizer_id="RWKV/rwkv-4-169m-pile")).ids.astype("int64"))
 windows = torch.stack([ids[w * SEQ:(w + 1) * SEQ] for w in range(N_WIN)])
 
@@ -46,12 +52,14 @@ for run in sys.argv[1:]:
     ck = torch.load(f"checkpoints/ladder/{run}/final.pt", map_location="cpu", weights_only=False)
     cfg = ck["config"]
     m = SpikingTernaryRWKV(SpikingTernaryRWKVConfig(**cfg)); m.load_state_dict(ck["model"]); m.to(dev).eval()
-    stats = {s: torch.zeros(5, dtype=torch.float64, device=dev) for s in SITES}  # n, nz, sum|q|, acc spike, acc base
+    consumer = dict(CONSUMER, **INPUT_CONSUMER) if cfg.get("act_quant_inputs") else CONSUMER
+    sites = SITES + list(INPUT_CONSUMER) if cfg.get("act_quant_inputs") else SITES
+    stats = {s: torch.zeros(5, dtype=torch.float64, device=dev) for s in sites}  # n, nz, sum|q|, acc spike, acc base
     nnz_col, lifs, exact = {}, {}, {}
     for i, blk in enumerate(m.blocks):
-        for site in SITES:
+        for site in sites:
             lifs[(i, site)] = blk.get_submodule(site)
-        for site, cons in CONSUMER.items():
+        for site, cons in consumer.items():
             ternary, _ = blk.get_submodule(cons).pack_weights()
             nnz_col[(i, site)] = (ternary != 0).sum(0).to(torch.float64)
     first = True
@@ -64,13 +72,13 @@ for run in sys.argv[1:]:
             q = q.to(torch.float64)
             st = stats[site]
             st[0] += q.numel(); st[1] += (q != 0).sum(); st[2] += q.abs().sum()
-            if site in CONSUMER:
+            if site in consumer:
                 st[3] += (q.abs() * nnz_col[(i, site)]).sum()
                 st[4] += ((q != 0).to(torch.float64) * nnz_col[(i, site)]).sum()
                 if first and i in (0, len(m.blocks) - 1):
                     # Exactness on real counts (first two windows): per-step accumulations
                     # through the ternary consumer sum to the integer-path ones.
-                    t = m.blocks[i].get_submodule(CONSUMER[site]).pack_weights()[0].to(torch.float64)
+                    t = m.blocks[i].get_submodule(consumer[site]).pack_weights()[0].to(torch.float64)
                     sp = spikes_of(q[:2], lif)
                     per_step = torch.stack([s @ t.T for s in sp]).sum(0)
                     exact[f"block{i}.{site}"] = bool(torch.equal(per_step, q[:2] @ t.T))
@@ -81,18 +89,18 @@ for run in sys.argv[1:]:
     for site, st in stats.items():
         n, nz, sabs, acc_s, acc_b = (float(v) for v in st)
         rec = {"elements": n, "E_abs_q": sabs / n, "P_nonzero": nz / n, "E_abs_q_given_nonzero": sabs / nz,
-               "spike_native": site in CONSUMER}
-        if site in CONSUMER:
+               "spike_native": site in consumer}
+        if site in consumer:
             rec.update(acc_spike=acc_s, acc_int4=acc_b, R=acc_s / acc_b)
         out["sites"][site] = rec
-    acc_s = sum(out["sites"][s]["acc_spike"] for s in CONSUMER)
-    acc_b = sum(out["sites"][s]["acc_int4"] for s in CONSUMER)
+    acc_s = sum(out["sites"][s]["acc_spike"] for s in consumer)
+    acc_b = sum(out["sites"][s]["acc_int4"] for s in consumer)
     out["R_pooled"] = acc_s / acc_b
     n_all = sum(r["elements"] for r in out["sites"].values())
-    out["spike_native_share_of_lif_outputs"] = sum(out["sites"][s]["elements"] for s in CONSUMER) / n_all
+    out["spike_native_share_of_lif_outputs"] = sum(out["sites"][s]["elements"] for s in consumer) / n_all
     # Matmul work per token: ternary BitLinears (LIF-fed or FP-fed) and the FP LM head.
     macs = {"bitlinear_lif_input": 0, "bitlinear_fp_input": 0}
-    consumers = {id(blk.get_submodule(c)) for blk in m.blocks for c in CONSUMER.values()}
+    consumers = {id(blk.get_submodule(c)) for blk in m.blocks for c in consumer.values()}
     for mod in m.modules():
         if isinstance(mod, BitLinear):
             key = "bitlinear_lif_input" if id(mod) in consumers else "bitlinear_fp_input"
