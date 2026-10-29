@@ -987,3 +987,70 @@ resolution.
 
 **Alternative not chosen.** Carry MinMax at 8 bits (1.003): NSLLM's quantizer,
 but it gives up the 4-bit activations that LSQ meets with ternary weights.
+
+---
+
+## Decision #19 — Rung 4 protocol: spike reading (4a) and membrane memory (4b) (2026-10-29)
+
+**Status:** accepted by Gaétan on 2026-10-29 (the three choices below were put
+to him before any rung-4 measurement). Details DEC-15 point 4 on top of
+rung 3 = all-4-bit LSQ, PPL 5.328 (DEC-18).
+
+**4a — spike reading.** No training; on `checkpoints/ladder/rung3l_a4_s{0,1}`,
+the first 256 windows of 128 tokens of the eval tail (32 k tokens), fresh
+state per window.
+
+  1. Signed grids are read as ±1 spikes: a count `q ∈ [−8, 7]` becomes `|q|`
+     spikes of sign `sign(q)` over T = 8 virtual steps; an unsigned relu²
+     count `q ∈ [0, 15]` becomes `q` spikes of +1 over T = 15. A test checks
+     that a ternary BitLinear fed the spikes, summed over T, gives exactly its
+     integer-path output.
+  2. Spike-native sites are those whose consumer is a ternary BitLinear:
+     time-mix `lif_out` → `W_o` and channel-mix `lif_k` → `W_v`. The others
+     are reported as not spike-native: time-mix `lif_k`, `lif_v` (into the
+     WKV, `exp(k)` needs the decoded count) and channel-mix `lif_v` (into the
+     FP receptance gate, a multiplication).
+  3. Primary proxy, accumulations. For a consumer `W` (out × in) and an input
+     count `q_i`, the spike reading performs `|q_i| · nnz(W[:, i])`
+     accumulations of ±1; the INT4 × ternary baseline performs
+     `1{q_i ≠ 0} · nnz(W[:, i])` accumulations of a 4-bit value (it may skip
+     zero inputs too). `R` = spike accumulations / baseline accumulations,
+     per site and pooled over the spike-native sites, with `E|q|`,
+     `P(q ≠ 0)` per site and the share of the model's LIF outputs that are
+     spike-native. `R ≥ 1` by construction (`= 1` only if every non-zero
+     count is ±1): with ternary weights the baseline has no multiplications
+     to remove.
+  4. Secondary, pJ under written assumptions. Horowitz (ISSCC 2014, 45 nm)
+     prices an addition by its width; both readings add into the same
+     accumulator (≥ 13 bits for 768-wide sums of 4-bit values), so with those
+     figures the pJ ratio is `R`. Pricing a spike accumulation as a 1-bit
+     operand (cost ∝ operand width, an assumption about event-driven
+     hardware) gives `R / 4`. An energy advantage is claimed only as
+     "`R / 4 < 1` under that assumption", never from `R` alone.
+
+**4b — membrane memory.**
+
+  1. The rung-3 run (LSQ, clipped STE, all-4-bit, KL to rung 1 seed 0, LR 3e-3,
+     10 k steps, 128 × 16, state reset before every window as in DEC-16)
+     without `--lif-stateless`: β per neuron, learnable, initialised at 0.9
+     (the code default; the LIF group's LR 5e-5 lets it move little); γ = 1
+     (soft reset; its learnable logit starts at the clamp of `_logit`, so it
+     stays at 1).
+  2. Anti-windup: after the reset the membrane is clamped,
+     `v ← clamp(γ · (v_pre − s · (q − zp)), −s/2, s/2)`, s the LSQ step.
+     Inside the grid the residual is already within ±s/2; the clamp only
+     discards the excess of saturated outputs (as the clipped STE of DEC-17
+     does for the gradient). No gradient through a clamped membrane;
+     backpropagation through the membrane across the tokens of a window
+     otherwise (the kernel's existing BPTT).
+  3. Seeds 0 and 1, protocol eval (cold: the membrane carries within a
+     window, not across). Kept only if it beats rung 3 (5.328) by more than
+     the noise rule, max(2 × seed spread, 5 % PPL): below 5.062 at the 5 %
+     floor. The warm eval is reported as secondary (DEC-16).
+
+**Alternatives asked and not chosen.** 4a: a pJ model as the primary proxy
+(the verdict would depend on the constants), the SNN papers' 0.9 pJ AC vs
+4.6 pJ FP32 MAC (compares to FP, not to the INT4 baseline DEC-15 names), and
+two binary populations per signed channel (same operation count, twice the
+neurons). 4b: a fixed β grid {0.5, 0.9} (4 runs) and β = 1 (first-order
+sigma-delta across tokens).
