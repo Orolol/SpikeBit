@@ -17,6 +17,10 @@ A finished run (`=== exit 0` in its pipeline.log) is skipped on re-run.
 One run leaves the A100 half idle at this batch size, so a second copy started on the same VM
 with the argument `reverse` (e.g. from `colab console`, under nohup) takes the queue from the
 other end and skips every run that already has a pipeline.log (started by either copy).
+The forward copy only skips finished runs, so it must never reach a run the reverse copy is
+still training: reserve the middle of the queue for it by writing a line into that run's
+pipeline.log before the reverse copy gets there (done here for rung3l_a4h8_s0, leaving the
+reverse copy rung3l_a4h8_s1 and rung3l_a4_s1).
 """
 import datetime, hashlib, os, subprocess, sys
 

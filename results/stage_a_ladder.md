@@ -227,3 +227,91 @@ largest ones, where relu²'s backward (2z) is largest.
 quantizer of the pre-registered rung 3; DECISIONS #17 (accepted the same
 evening) makes these runs rung 3, and the `rung3c_*` runs stay as the
 record of the failure.
+
+## Rung 3 — results with the clipped STE, and LSQ vs MinMax (2026-10-28 21:20 – 2026-10-29 12:03)
+
+Runs `runs/ladder/rung3m_*` (MinMax, DECISIONS #17) and `runs/ladder/rung3l_*`
+(LSQ): the pre-registered configs with `--act-ste clipped`, LR 3e-3, KL to
+rung 1 seed 0, seeds 0 and 1. The LSQ runs are the comparison DEC-15
+pre-registers at this rung ("LSQ vs MinMax is compared here only"). Before
+they started, LSQ was made to differ from MinMax by the learned step only
+(commit `1a5623a`, which leaves the MinMax path unchanged): same calibrated
+starting grid (same step-0 loss, 9.9978 at seed 1), zp fixed at 0 on the
+symmetric grids, clipped STE. One step per tensor, log-parameterised, LR 1e-2
+(trainer default), gradient scaled by `1/sqrt(N·Q_P)` (Esser et al.).
+
+Hardware: the local 5090 for the five runs started by 22:20. The sixth,
+`rung3m_a4h8_s1`, was stopped at step 300 to free the GPU and rerun on a Colab
+A100 with the four `rung3l_*` runs (marked A100 below), two at a time, via
+`colab/ladder_rung3.py` at commit `5ca50e5` (KL teacher and packed data checked
+by sha256). A first A100 attempt ran the per-step Python fallback (the image
+has no ninja, so the CUDA extensions did not build: 6.7 s/step) and was
+stopped at step 200; both aborted runs are in `runs/ladder_aborted/`. The code
+is the same on both GPUs; bf16 numerics are not bit-identical (0.1 % on the
+rung-2 checkpoints, below).
+
+| quantizer | config | PPL seed 0 | PPL seed 1 | mean | ratio to rung 2 (5.157) | threshold |
+|---|---|---|---|---|---|---|
+| MinMax | 8-bit | 5.237 | 5.104 | 5.171 | **1.003** | ≤ 1.1: pass |
+| MinMax | 4-bit | 10.371 | 9.702 | 10.037 | 1.946 | ≤ 1.3: fail |
+| MinMax | 4-bit, relu² output 8-bit | 9.498 | 10.082 (A100) | 9.790 | 1.898 | ≤ 1.3: fail |
+| LSQ | 4-bit | 5.389 (A100) | 5.267 (A100) | 5.328 | **1.033** | ≤ 1.3: pass |
+| LSQ | 4-bit, relu² output 8-bit | 5.358 (A100) | 5.241 (A100) | 5.300 | 1.028 | ≤ 1.3: pass |
+
+The clipped STE fixes 8 bits: no divergence on either seed, and the MinMax
+8-bit model is within 0.3 % of rung 2. At 4 bits MinMax fails on every seed
+and config, by about the same margin as with the identity STE (`rung3c_*`,
+1.89 and 2.04). LSQ at 4 bits is within 3.3 % of rung 2, and keeping the relu²
+output at 8 bits buys only 0.5 % more; the gap between the two quantizers
+(×1.9) is far outside the noise rule (5 % floor).
+
+**Eval check** (suspicious-result rule, `runs/ladder/check_quant_*_colab.txt`,
+first 32 windows of the eval tail, eval mode). On `rung3l_a4_s{0,1}` and
+`rung3l_a4h8_s1`, all 60 FAI-LIFs are in LSQ mode and every output is on its
+grid (`max |q − round(q)|` ≤ 2.7e-2, bf16 rounding); in blocks 0 and 11 the
+4-bit LIFs use 10–16 levels, the 8-bit relu² output 181–184. With the same weights and
+FP activations the CE gets worse (1.39 → 1.64 at seed 0, 1.38 → 1.67 at
+seed 1): the model is fitted to its 4-bit grids, not running around them.
+
+**Activation scale at 4 bits** (`scripts/_diagnose_act_scale.py`, run on the
+A100, `runs/ladder/diag_act_scale_{rung3m_colab,rung3l_a4_s0_colab}.txt`;
+grid steps of LSQ from the eval check, since the script prints the observer's
+step, which LSQ does not use). The clipped STE does not stop the runaway at 4 bits:
+
+| block 0 | rung 2 | MinMax 8-bit (a8 s0) | MinMax 4-bit (a4 s0 / a4 s1 / a4h8 s0) | LSQ 4-bit (a4 s0) |
+|---|---|---|---|---|
+| channel-mix `W_k` output absmax | 8.19 | 8.75 | 486 / 209 / 187 | 7.94 |
+| channel-mix `W_v` output absmax | 222 | 204 | 3.1e7 / 2.8e6 / 2.5e6 | 138 |
+| channel-mix `lif_v` grid step | – | 1.08 | 3.7e6 / 3.3e5 / 2.8e5 | 6.98 |
+| time-mix `lif_v` grid step | – | 0.044 | 35.5 / 22.1 / 17.9 | 0.239 |
+| residual-stream grad at block 0 | n/a | 3.3e-3 | 1.1e-8 / 1.1e-7 / 2.1e-7 | 3.9e-3 |
+
+Block 11 channel-mix `W_v` output: 3.2e3 at 8 bits, 1e9 / 9.8e7 / 7.9e7 with
+MinMax at 4 bits, 2.9e3 with LSQ at 4 bits (rung 2: 6.4e3). With MinMax at
+4 bits the block-0 time-mix inflates too (`W_k` output ×5–9, `W_v` ×20–50 over
+8 bits), which it did not at 8 bits.
+
+**Reading.** A MinMax grid is set by the EMA of the activation max, so at
+16 levels a wider range sends every non-extreme value to the zero bin; the
+loss can then only push magnitudes up, and the grid follows. LSQ sets the
+step from the loss: it clips instead (block 0 time-mix `lif_v`: 21–24 % of
+the outputs at the grid ends on all three LSQ runs, vs 7e-5 for MinMax
+`a4h8 s1`) and keeps its resolution.
+This is the mechanism the data fit, not one tested in isolation.
+
+**Warm (streaming) eval** (DEC-16 point 3, secondary; missing at rung 2 until
+now). `scripts/_diagnose_state_regime.py` on the A100,
+`runs/ladder/warm_cold_rung2_rung3_colab.txt`:
+
+| run | cold (protocol) | warm (streaming) |
+|---|---|---|
+| rung 2, s0 / s1 | 5.217 / 5.088 | 4.566 / 4.456 |
+| MinMax 8-bit, s0 | 5.232 | 4.546 |
+| LSQ 4-bit, s0 / s1 | 5.384 / 5.262 | 4.616 / 4.508 |
+
+LSQ 4-bit warm: 4.562 vs 4.511 for rung 2 (1.011). The cold column also
+measures the hardware effect: the rung-2 checkpoints give 5.217 / 5.088 on the
+A100 vs 5.222 / 5.093 on the 5090 (0.1 %).
+
+**Verdict proposed** (DECISIONS #18): rung 3 passes at 4 bits with LSQ
+(1.033 ≤ 1.3) and fails with MinMax (1.95); 8 bits passes with MinMax.

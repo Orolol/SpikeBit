@@ -950,3 +950,40 @@ five clipped-STE runs are in `runs/ladder/rung3m_*`.
 activation clipping or a scale penalty: these would treat the symptom, and
 the runaway appears at the pre-registered LR on both seeds, the healthy one
 included.
+
+---
+
+## Decision #18 — Rung 3 closes with LSQ as the activation quantizer (2026-10-29)
+
+**Status:** proposed, awaiting Gaétan. Decided after the rung-3 results; DEC-15
+pre-registers the LSQ vs MinMax comparison at rung 3 but not which quantizer
+the later rungs keep.
+
+**Why.** Rung 3 with the clipped STE of DEC-17 (`results/stage_a_ladder.md`),
+ratios to rung 2 (5.157), means of seeds 0 and 1:
+
+| quantizer | 8-bit | 4-bit | 4-bit, relu² output 8-bit |
+|---|---|---|---|
+| MinMax | 1.003 | 1.946 | 1.898 |
+| LSQ | – | **1.033** | 1.028 |
+
+The LSQ models are 4-bit (every FAI-LIF output on its grid; FP activations on
+the same weights are worse). At 4 bits the MinMax grid still runs away with
+the clipped STE (block 0 channel-mix `W_v` output 2.5e6–3.1e7 vs 222 at
+rung 2); with LSQ it stays at 138. The MinMax step follows the EMA
+max; LSQ's is set by the loss and clips 21–24 % of some outputs to keep its
+resolution.
+
+**Proposal.**
+
+  1. Rung 3 = LSQ with all-4-bit activations (`rung3l_a4_s{0,1}`, PPL 5.328,
+     1.033 × rung 2, threshold ≤ 1.3: pass). MinMax stays as the baseline
+     record (8-bit pass, 4-bit fail). The 8-bit relu² variant is reported
+     separately (DEC-15) and is not needed.
+  2. Rungs 4a and 4b use that config (LSQ, clipped STE, all-4-bit, LR 3e-3)
+     and compare against 5.328 with the DEC-15 noise rule.
+  3. Rung 4a (spike reading, energy proxy) is computed on
+     `checkpoints/ladder/rung3l_a4_s{0,1}`.
+
+**Alternative not chosen.** Carry MinMax at 8 bits (1.003): NSLLM's quantizer,
+but it gives up the 4-bit activations that LSQ meets with ternary weights.
