@@ -1054,3 +1054,39 @@ state per window.
 two binary populations per signed channel (same operation count, twice the
 neurons). 4b: a fixed β grid {0.5, 0.9} (4 runs) and β = 1 (first-order
 sigma-delta across tokens).
+
+---
+
+## Decision #20 — Rung 4b: no gradient through the carried membrane (2026-10-29)
+
+**Status:** proposed, awaiting Gaétan. Amends DEC-19 point 2 ("backpropagation
+through the membrane across the tokens of a window otherwise (the kernel's
+existing BPTT)"), after the first 4b attempt failed to train.
+
+**Why.** `results/stage_a_ladder.md`, rung 4b first attempt: with β = 0.9 the
+total gradient norm is infinite from step 0 in training (6.5e15 on the
+rung-3 checkpoint, vs 0.29 with β = 0), growing ~×30 per block backward;
+clipping zeroes every gradient and nothing trains. The kernel's backward
+treats the reset `s·q` as a constant, so `dv_t/dv_pre_t = γ`: the gradient of
+a leaky integrator without reset, carried to later tokens with weight
+(βγ)^k and compounded over 60 LIFs. The forward is a soft-reset quantizer
+whose residual is bounded in ±s/2 and barely follows its input. The
+per-step path (`FAILIF._forward_step`) already detaches the carried
+membrane, so the two code paths disagree today.
+
+**Proposal.**
+
+  1. The membrane carried to the next token is detached in the backward
+     (fused kernel, its Python reference, MinMax and LSQ paths), as in the
+     per-step path. β keeps its gradient through `v_pre = β·v_{t−1} + x_t`
+     (`Σ g·v_{t−1}`); γ gets none (it stays at 1). Config field
+     `lif_membrane_grad`, "bptt" (default, reproduces the earlier runs) or
+     "detached"; rung 4b uses "detached".
+  2. Rung 4b is rerun with it, everything else as DEC-19 (β from 0.9, clamp
+     ±s/2, seeds 0 and 1, kept only below 5.062).
+
+**Alternatives not chosen.** Keep the integrator gradient with a smaller β
+(0.5 still compounds over 60 LIFs) or truncate it to a few tokens: both keep
+a gradient the forward does not have. The STE of the reset (`d(s·q)/dv_pre = 1`
+inside the grid) gives `dv_t/dv_pre_t = 0` inside the grid and, with the
+±s/2 clamp, 0 outside: the same as point 1 except for γ's gradient.

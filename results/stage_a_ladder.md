@@ -317,3 +317,59 @@ A100 vs 5.222 / 5.093 on the 5090 (0.1 %).
 LSQ (1.033 ≤ 1.3) and fails with MinMax (1.95); 8 bits passes with MinMax.
 **Rung 3 = LSQ, all-4-bit activations, PPL 5.328**, the reference of rungs 4a
 and 4b.
+
+## Rung 4a — spike reading of rung 3 (DECISIONS #19, 2026-10-29)
+
+`scripts/rung4a_spike_reading.py` (commit `646e8c8`) on `rung3l_a4_s{0,1}`, first
+256 windows of 128 tokens of the eval tail, fresh state per window, run on
+CPU; `runs/ladder/rung4a_rung3l_a4_s{0,1}.json`,
+`runs/ladder/rung4a_spike_reading.txt`. Seed 0 / seed 1:
+
+| site (pooled over 12 blocks) | consumer | E\|q\| | P(q ≠ 0) | E\|q\| given q ≠ 0 | R |
+|---|---|---|---|---|---|
+| time-mix `lif_k` (signed) | WKV | 2.72 / 2.80 | 0.885 / 0.889 | 3.07 / 3.15 | – |
+| time-mix `lif_v` (signed) | WKV | 3.39 / 3.40 | 0.908 / 0.908 | 3.73 / 3.74 | – |
+| time-mix `lif_out` (signed) | `W_o` (ternary) | 0.301 / 0.305 | 0.177 / 0.179 | 1.70 / 1.71 | 1.714 / 1.721 |
+| channel-mix `lif_k` (relu², unsigned) | `W_v` (ternary) | 0.067 / 0.069 | 0.032 / 0.032 | 2.12 / 2.15 | 2.110 / 2.137 |
+| channel-mix `lif_v` (signed) | FP gate | 1.71 / 1.73 | 0.713 / 0.715 | 2.40 / 2.42 | – |
+
+  * Exactness: on real counts (first two windows, blocks 0 and 11, both
+    spike-native sites), the ±1 / {0, 1} spike reading gives the consumer's
+    integer accumulations exactly; the unit test covers random counts.
+  * **R pooled = 1.881 / 1.897**: the spike reading performs 1.9 × the
+    accumulations of the INT4 × ternary baseline. With Horowitz's figures
+    (an addition priced by its width, same accumulator) that is 1.9 × the
+    energy at these sites: no advantage. Pricing a spike accumulation as a
+    1-bit operand gives **R / 4 = 0.47 / 0.47**, an advantage only under that
+    hardware assumption (DEC-19 point 4).
+  * Spike-native share: 62.5 % of the LIF output elements, but only **27 %
+    of the matmul MACs per token**: the ternary BitLinears fed by LIF outputs
+    are 35.4 M MACs; those fed by the FP LayerNorm output (time-mix `W_r`,
+    `W_k`, `W_v`, channel-mix `W_k`, `W_r`) are 56.6 M (43 %); the FP LM
+    head is 38.6 M (30 %). The "4-bit activations" of rung 3 are the LIF
+    outputs; the inputs of most BitLinears are FP by design (DEC-15 rung 0).
+  * The spike-native sites are sparse (18 % and 3 % non-zero), but the
+    baseline skips zeros too, so sparsity does not enter R.
+
+## Rung 4b — first attempt: the membrane gradient explodes (2026-10-29)
+
+Runs `rung4b_a4_s{0,1}` (bundle `1875bea`, `colab/ladder_rung4.py`, A100):
+rung 3 with β learnable from 0.9 and the ±s/2 membrane clamp (DEC-19).
+Neither trained: the total grad norm was infinite from step 0, clipping
+scaled every gradient to 0, the weights never moved (loss ≈ 21 for 300
+steps vs 2.6 for rung 3 at step 300). Both stopped at step ~350;
+`runs/ladder_aborted/rung4b_a4_s{0,1}_membrane_bptt_explodes/`.
+
+Diagnosis (`runs/ladder_aborted/rung4b_grad_diag.txt`, on `rung3l_a4_s0`,
+one CE step): grad norm 0.29 with β = 0, 6.5e15 with β = 0.9 and the clamp,
+1.5e16 with β = 0.9 without it. Going backward the LIF output gradient grows
+by ~×30 per block (time-mix `lif_out`: 0.017 at block 11, 5e14 at block 0
+over 128 tokens; 88 over 16 tokens). The clamp is not the cause. The fused
+kernel's backward detaches the reset `s·q` and so uses `dv_t/dv_pre = γ`,
+the gradient of a leaky integrator without reset: every output gradient is
+carried to the following tokens with weight (βγ)^k (up to ×10 per LIF),
+compounded over 60 LIFs. After a soft reset the residual is a sawtooth of
+the input bounded in ±s/2, so this gradient does not describe the forward.
+The per-step path (`FAILIF._forward_step`) already detaches the carried
+membrane; only the kernel and its Python reference keep the integrator
+gradient. A fix changes DEC-19 point 2: DECISIONS #20 (proposed).
