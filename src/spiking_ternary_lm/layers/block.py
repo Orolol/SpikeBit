@@ -34,6 +34,7 @@ class RWKVBlock(nn.Module):
         ffn_relu_sq: bool = False,
         act_grid: str = "legacy",
         bits_ffn_hidden: int = 0,
+        act_quant_inputs: bool = False,
     ) -> None:
         super().__init__()
         self.hidden_size = int(hidden_size)
@@ -52,6 +53,7 @@ class RWKVBlock(nn.Module):
             spiking_r=spiking_r,
             init_v_thr=init_v_thr,
             grid=act_grid,
+            quantize_inputs=act_quant_inputs,
         )
         self.channel_mix = SpikingRWKVChannelMix(
             hidden_size=hidden_size,
@@ -66,6 +68,7 @@ class RWKVBlock(nn.Module):
             relu_sq=ffn_relu_sq,
             grid=act_grid,
             hidden_bits=bits_ffn_hidden,
+            quantize_inputs=act_quant_inputs,
         )
 
     def forward(self, x: Tensor) -> Tensor:

@@ -66,6 +66,7 @@ class SpikingTernaryRWKV(nn.Module):
                     ffn_relu_sq=getattr(config, "ffn_relu_sq", False),
                     act_grid=getattr(config, "act_grid", "legacy"),
                     bits_ffn_hidden=getattr(config, "bits_ffn_hidden", 0),
+                    act_quant_inputs=getattr(config, "act_quant_inputs", False),
                 )
                 for i in range(config.n_layers)
             ]

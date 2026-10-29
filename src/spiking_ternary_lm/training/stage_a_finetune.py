@@ -160,6 +160,7 @@ class StageAArgs:
     lif_stateless: bool = False
     lif_membrane_clamp: float = 0.0
     lif_membrane_grad: str = ""
+    act_quant_inputs: bool = False
     bits: int = 0
     bits_ffn_hidden: int = 0
     # Calibrate every MinMax observer on this many training batches (FP
@@ -333,7 +334,7 @@ def train(args: StageAArgs) -> int:
         LOG.info("ffn_relu_sq: the channel-mix keeps the teacher's relu²")
         cfg.ffn_relu_sq = True
     for name in ("act_grid", "act_output", "act_ste", "lif_stateless", "lif_membrane_clamp",
-                 "lif_membrane_grad", "bits", "bits_ffn_hidden"):
+                 "lif_membrane_grad", "act_quant_inputs", "bits", "bits_ffn_hidden"):
         value = getattr(args, name)
         if value:
             LOG.info("overriding %s: %s -> %s", name, getattr(cfg, name), value)

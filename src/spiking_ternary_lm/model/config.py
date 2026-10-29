@@ -57,6 +57,10 @@ class SpikingTernaryRWKVConfig:
     # Gradient through the membrane carried across tokens: "bptt" (legacy)
     # or "detached" (DECISIONS #20).
     lif_membrane_grad: str = "bptt"
+    # FAI-LIF on the token-shift mixes feeding W_r/W_k/W_v (time-mix) and
+    # W_k/W_r (channel-mix), so every BitLinear input is a LIF output
+    # (DECISIONS #22, rung 5; needs act_grid "faithful").
+    act_quant_inputs: bool = False
     # Bit-width of the FFN hidden FAI-LIF (relu² output); 0 = ``bits``.
     bits_ffn_hidden: int = 0
     # MinMax observer scope: "tensor" (one grid per activation tensor, NSLLM)

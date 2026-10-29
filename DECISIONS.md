@@ -1095,8 +1095,8 @@ inside the grid) gives `dv_t/dv_pre_t = 0` inside the grid and, with the
 
 ## Decision #21 — Stage A closes at rung 3; the project's claim is revised (2026-10-29)
 
-**Status:** proposed, awaiting Gaétan. Applies the positioning note of
-DEC-15 after rung 4 (`results/stage_a_ladder.md`, rungs 4a and 4b).
+**Status:** accepted by Gaétan on 2026-10-29, with option 3a (rung 5 to be
+pre-registered). Applies the positioning note of DEC-15 after rung 4 (`results/stage_a_ladder.md`, rungs 4a and 4b).
 
 **Why.**
 
@@ -1145,3 +1145,46 @@ DEC-15 after rung 4 (`results/stage_a_ladder.md`, rungs 4a and 4b).
 **Recommendation.** 1 and 2 as written, and 3a: it completes the Stage A the
 charter defines, and it is the setting where the spike-reading question
 covers most of the matmul work. 3b waits for that answer.
+
+---
+
+## Decision #22 — Rung 5 protocol: 4-bit LIFs on the FP-fed BitLinear inputs (2026-10-29)
+
+**Status:** accepted by Gaétan on 2026-10-29 (the four choices below were put
+to him before any rung-5 measurement). DEC-21 option 3a.
+
+**What changes.** On top of rung 3 (LSQ, clipped STE, all-4-bit, stateless
+LIFs), one FAI-LIF on each BitLinear input that rung 3 leaves FP: the
+token-shift mixes `xr`, `xk`, `xv` of the time-mix (inputs of `W_r`, `W_k`,
+`W_v`) and `xk`, `xr` of the channel-mix (inputs of `W_k`, `W_r`). That is
+5 per block, 60 in all, 120 LIFs in the model. The LIF quantizes the mix
+`μ · x_t + (1 − μ) · x_{t−1}`, not the LayerNorm output before it: a
+per-channel mix of two quantized tokens is off the grid and does not fold into
+ternary weights. Every BitLinear input is then a LIF output; embeddings, LM
+head, norms, the WKV and the sigmoid gates stay FP (DEC-2).
+
+**Protocol.**
+
+  1. Quantizer at the new sites: LSQ per tensor (one learned step per site),
+     signed symmetric 4-bit grid [−8, 7], zp = 0, clipped STE, stateless
+     (β = 0), started from the calibrated range (8 batches), LSQ group LR as
+     rung 3. Config field `act_quant_inputs`, trainer flag
+     `--act-quant-inputs`.
+  2. Training as rung 3: from the HF teacher, KL to rung 1 seed 0, LR 3e-3,
+     10 k steps, DEC-16 regime, seeds 0 and 1, protocol eval.
+  3. Pass if the PPL (mean of the two seeds) is ≤ 1.1 × rung 3 = 5.861:
+     Stage A's result is then rung 5. Otherwise Stage A stays at rung 3 and
+     records that the BitLinear inputs do not go to 4 bits at this budget;
+     no fallback run.
+  4. Eval check, as at rung 3: all 120 LIFs in LSQ mode with outputs on their
+     grid, and the CE of the same weights with FP activations.
+  5. Secondary: the 4a measurement on the rung-5 checkpoints with the seven
+     BitLinear consumers per block (`R` per site and pooled, spike-native
+     share of the dense matmul MACs, 70 % by construction), the warm eval,
+     and the ratio to rung 1 against DEC-1's 95 %.
+
+**Alternatives asked and not chosen.** A per-token absmax scale (BitNet
+a4.8): a data-dependent threshold, not a fixed-step LIF. A threshold of
+≤ 1.3 × rung 3 (the rung-3 4-bit threshold). An 8-bit pair at the same sites
+if 4 bits fails. Fine-tuning from the rung-3 checkpoints: cheaper, but a
+different budget from every other rung.

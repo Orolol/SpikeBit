@@ -54,3 +54,7 @@ def test_lif_config_switches_reach_every_lif():
     assert lifs and all(
         m.ste_clip and m.membrane_clamp == 0.5 and m.membrane_grad == "detached" for m in lifs
     )
+    cfg.act_grid = "faithful"
+    cfg.act_quant_inputs = True
+    lifs = [m for m in SpikingTernaryRWKV(cfg).modules() if isinstance(m, FAILIF)]
+    assert len(lifs) == 10 * cfg.n_layers and all(m.ste_clip for m in lifs)

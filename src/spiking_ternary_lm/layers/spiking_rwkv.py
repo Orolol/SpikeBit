@@ -146,6 +146,7 @@ class SpikingRWKVTimeMix(nn.Module):
         signed_kv: bool = True,
         spiking_r: bool = True,
         grid: str = "legacy",
+        quantize_inputs: bool = False,
         # ``init_v_thr`` is retained as a kwarg only for back-compat with
         # older configs; the new observer-based FAILIF derives the scale
         # online, so this value is **ignored** by the default path.
@@ -205,6 +206,16 @@ class SpikingRWKVTimeMix(nn.Module):
         self.lif_out = FAILIF(
             hidden_size, num_bits=bits, signed=signed_out, observer_momentum=observer_momentum,
             symmetric=sym,
+        )
+        # DECISIONS #22: a FAI-LIF on each token-shift mix, so the inputs of
+        # W_r, W_k, W_v are integer counts too (identity otherwise).
+        if quantize_inputs and not sym:
+            raise ValueError("quantize_inputs needs the faithful grid (signed symmetric)")
+        self.lif_xr, self.lif_xk, self.lif_xv = (
+            FAILIF(hidden_size, num_bits=bits, signed=True, observer_momentum=observer_momentum,
+                   symmetric=True)
+            if quantize_inputs else nn.Identity()
+            for _ in range(3)
         )
 
         # Recurrent state buffers. Non-persistent: re-init on each
@@ -269,9 +280,9 @@ class SpikingRWKVTimeMix(nn.Module):
         mu_r = self.mu_r.to(x_t.dtype)
         mu_k = self.mu_k.to(x_t.dtype)
         mu_v = self.mu_v.to(x_t.dtype)
-        xr = mu_r * x_t + (1.0 - mu_r) * x_prev
-        xk = mu_k * x_t + (1.0 - mu_k) * x_prev
-        xv = mu_v * x_t + (1.0 - mu_v) * x_prev
+        xr = self.lif_xr(mu_r * x_t + (1.0 - mu_r) * x_prev)
+        xk = self.lif_xk(mu_k * x_t + (1.0 - mu_k) * x_prev)
+        xv = self.lif_xv(mu_v * x_t + (1.0 - mu_v) * x_prev)
 
         # Project + FAI-LIF.
         r_raw = self.W_r(xr)
@@ -350,9 +361,9 @@ class SpikingRWKVTimeMix(nn.Module):
         mu_r = self.mu_r.to(x.dtype)
         mu_k = self.mu_k.to(x.dtype)
         mu_v = self.mu_v.to(x.dtype)
-        xr = mu_r * x + (1.0 - mu_r) * x_shifted
-        xk = mu_k * x + (1.0 - mu_k) * x_shifted
-        xv = mu_v * x + (1.0 - mu_v) * x_shifted
+        xr = self.lif_xr(mu_r * x + (1.0 - mu_r) * x_shifted)
+        xk = self.lif_xk(mu_k * x + (1.0 - mu_k) * x_shifted)
+        xv = self.lif_xv(mu_v * x + (1.0 - mu_v) * x_shifted)
 
         # ---- Projections + FAI-LIF on (B, T, H) -------------------------
         r = self.lif_r(self.W_r(xr))          # FAI-LIF or Identity

@@ -1,64 +1,58 @@
-# SpikeBit — Spiking Ternary Language Model
+# SpikeBit — ternary RWKV-4 with 4-bit LIF activations
 
-Experimental research project: RWKV-4 architecture, FAI-LIF integer-spike
-activations (4-bit by default), BitNet b1.58-style ternary weights with
-group-wise scale. The goal is a language model whose weights are all in
-{-1, 0, +1} and whose activations are all small integers, so that it could
-eventually run without floating-point multiplies.
+Experimental research project: RWKV-4 architecture, ternary weights
+(BitNet b1.58 style, group-wise scale) and FAI-LIF neurons that quantize
+activations to 4-bit integers.
+
+**Claim (DECISIONS #21).** SpikeBit converts RWKV-4-169M to ternary weights and
+4-bit activations at the LIF sites at 1.07 × the FP fine-tuned perplexity on
+TinyStories. The LIF neurons act as stateless 4-bit quantizers; their outputs
+admit an exact ±1 spike reading, which costs less than an INT4 × ternary
+baseline only where a 1-bit accumulation costs under ~half a 4-bit one, on
+27 % of the matmul work. A membrane carried across tokens brought no gain at
+this scale. No energy claim without a hardware cost model.
 
 Reference: Yao et al., *Neuromorphic spike-based large language model*,
 NSR, Dec 2025 (4-bit weights). SpikeBit pushes the weights to ternary.
 
-Two-stage validation plan:
+Two-stage validation plan (DECISIONS #1):
 
-- **Stage A** — QAT-conversion of the pre-trained RWKV-4-169M-Pile into a
-  spiking-ternary student, fine-tuned on TinyStories. Validates the
-  architecture. Target: ≥ 95 % of the teacher's perplexity.
+- **Stage A** — QAT-conversion of the pre-trained RWKV-4-169M-Pile into the
+  ternary student, fine-tuned on TinyStories. Validates the architecture.
+  Target: ≥ 95 % of the teacher's perplexity.
 - **Stage C** — train the same architecture from scratch on the same data
   budget. Isolates optimisation risk from architectural feasibility.
   Target: ≥ 80 % of Stage A.
 
 All design decisions live in `DECISIONS.md` (numbered, immutable entries).
 
-## Status (snapshot, 2026-10-28, evening)
+## Status (2026-10-29)
 
-Built in an autonomous three-day session (2026-05-19 → 21), paused, resumed
-2026-10-28. See DECISIONS #14 and `results/stage_a_full_4b.md` for the resume
-day: teacher PPL = 13.34; reference Stage A run `stage_a_repro_may_1500`
-(PPL 309 full tail / 395 on the evaluate.py metric at 1 500 steps); every
-longer run diverges because the per-tensor MinMax observers lose track of the
-activation ranges. Next step: LSQ activation quantizer.
+Stage A was rebuilt as a measured ladder (DECISIONS #15–#21); results in
+`results/stage_a_ladder.md`. Protocol: last 1 % of TinyStories, seq 128,
+stateless windows, 1 M tokens; two seeds per rung.
 
-**Done.** Phases 0–4: neurons (FAI-LIF with moving-average MinMax
-observer, binary LIF, surrogates), ternary STE + `BitLinear`, spiking
-RWKV-4 blocks, teacher conversion (222 tensors), Stage A trainer, eval
-pipeline (PPL, generation, spike stats). Fused CUDA kernels for the WKV
-recurrence and for FAI-LIF (`layers/csrc`, `neurons/csrc`) make training
-~25× faster than the Python loop (0.13 s/step at seq 64 × batch 8 on a
-5090, i.e. ~22 min for 10 k steps). Stage C and the Phase 6 ablations are
-code only, never run.
+| rung | what changes | PPL | ratio |
+|---|---|---|---|
+| 0 | converted student, quantization off | 13.98 (= teacher) | exact |
+| 1 | FP student fine-tuned (reference) | 4.986 | – |
+| 2 | ternary weights | 5.157 | 1.03 × rung 1 |
+| 3 | + 4-bit LSQ activations at the 60 LIF sites | **5.328** | 1.03 × rung 2 |
+| 4a | ±1 spike reading of rung 3 | exact; 1.9 × the accumulations of INT4 × ternary | – |
+| 4b | + membrane carried across tokens (β ≈ 0.9) | 5.543 | not kept |
 
-**Results.** The May runs are not a usable reference (DECISIONS #14: unrecorded
-config, code changed since, ±30 % eval noise). Reference run on 2026-10-28:
-`runs/stage_a_repro_may_1500` → PPL 309 (full tail, 1 500 steps) / 394.9 on the
-`scripts/evaluate.py` metric, teacher 13.34 on the same tail. Full log and the
-A/B tables in `results/stage_a_full_4b.md`. The quantisation stack, not the
-budget, is the limiter; the per-tensor MinMax observers lose track of the
-activation ranges past ~1.5 k steps.
+Stage A's result is rung 3, at 93.6 % of rung 1 (target ≥ 95 %). Five of the
+seven BitLinears per block still take the FP LayerNorm output; quantizing
+those inputs is rung 5 (next, to be pre-registered). Embeddings, LM head and
+norms stay FP (DECISIONS #2). Stage C and the Phase 6 ablations are code
+only, never run.
 
-**Known limitations (reviewed 2026-10-28, see DECISIONS #14/#15).** Stage A is
-not yet a faithful conversion: FAI-LIF emits raw integers (scale/zero-point
-never folded into the next BitLinear), the channel-mix `relu²` is dropped and
-`lif_out` is unsigned, so the converted student starts worse than uniform.
-Batch rows do not continue across steps (DEC-2 streaming not implemented),
-the in-training eval shares state with training, and the teacher reference
-is not fine-tuned on TinyStories. BF16 shadow weights break vanilla AdamW;
-use FP32 master + autocast (DECISIONS #12, #13).
-
-**Next steps:** DECISIONS #15 (accepted): rebuild Stage A as a faithful
-conversion ladder with a fine-tuned teacher reference, folded quantization
-grids, stateless-LIF ablation and KL distillation. First rung: the exact
-equivalence gate (student with quantization off = teacher).
+**Done.** Phases 0–4: neurons (FAI-LIF with MinMax or LSQ grids, binary LIF,
+surrogates), ternary STE + `BitLinear`, spiking RWKV-4 blocks, teacher
+conversion (222 tensors), Stage A trainer, eval pipeline (PPL, generation,
+spike stats). Fused CUDA kernels for the WKV recurrence and for FAI-LIF
+(`layers/csrc`, `neurons/csrc`) make training ~25× faster than the Python
+loop. Colab drivers for the ladder runs in `colab/`.
 
 ## Setup
 
