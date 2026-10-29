@@ -35,6 +35,7 @@ from spiking_ternary_lm.neurons.fai_lif import (
     enable_lsq,
     set_observer_scope,
     set_membrane_clamp,
+    set_membrane_grad,
     set_output_mode,
     set_stateless,
     set_ste_clip,
@@ -91,6 +92,7 @@ class SpikingTernaryRWKV(nn.Module):
             set_stateless(self)
         if getattr(config, "lif_membrane_clamp", 0.0):
             set_membrane_clamp(self, config.lif_membrane_clamp)
+        set_membrane_grad(self, getattr(config, "lif_membrane_grad", "bptt"))
         weight_quant = getattr(config, "weight_quant", "ternary")
         if weight_quant == "none":
             set_weight_quant(self, False)

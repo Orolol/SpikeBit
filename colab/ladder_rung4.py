@@ -34,10 +34,11 @@ print("commit", COMMIT, "| KL teacher OK | CUDA extensions OK |", GPU, flush=Tru
 KL_ARGS = ["--distill-checkpoint", KL]
 TAIL = ["--seq-len", "128", "--batch-size", "16", "--reset-state-every", "1"]
 # Rung 3 (DEC-18: LSQ, clipped STE, all-4-bit) without --lif-stateless: beta learnable from
-# its 0.9 init, membrane clamped to ±s/2 after the reset (DEC-19).
+# its 0.9 init, membrane clamped to ±s/2 after the reset (DEC-19), no gradient through the
+# carried membrane (DEC-20: the BPTT one is infinite from step 0).
 RUNG4B = ["--weight-quant", "ternary", "--act-quant", "lsq", "--ffn-relu-sq", "--act-grid", "faithful",
           "--act-output", "dequant", "--act-ste", "clipped", "--lif-membrane-clamp", "0.5",
-          "--calibrate-batches", "8", "--bits", "4", *KL_ARGS]
+          "--lif-membrane-grad", "detached", "--calibrate-batches", "8", "--bits", "4", *KL_ARGS]
 RUNS = {"rung4b_a4_s0": (0, RUNG4B), "rung4b_a4_s1": (1, RUNG4B)}
 
 

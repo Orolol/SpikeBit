@@ -1059,7 +1059,7 @@ sigma-delta across tokens).
 
 ## Decision #20 — Rung 4b: no gradient through the carried membrane (2026-10-29)
 
-**Status:** proposed, awaiting Gaétan. Amends DEC-19 point 2 ("backpropagation
+**Status:** accepted by Gaétan on 2026-10-29. Amends DEC-19 point 2 ("backpropagation
 through the membrane across the tokens of a window otherwise (the kernel's
 existing BPTT)"), after the first 4b attempt failed to train.
 

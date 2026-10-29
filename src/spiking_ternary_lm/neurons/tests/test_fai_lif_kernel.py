@@ -105,7 +105,8 @@ def test_forward_spikes_are_integer_in_range():
 
 @CUDA
 @MEMBRANE
-def test_backward_matches_python_autograd(v_clamp, step):
+@pytest.mark.parametrize("detach_carry", [False, True])
+def test_backward_matches_python_autograd(v_clamp, step, detach_carry):
     x, beta, gamma, v0, scale, zp, qmin, qmax = _make_inputs(
         B=3, T=16, H=32, device="cuda", scale=step
     )
@@ -116,11 +117,13 @@ def test_backward_matches_python_autograd(v_clamp, step):
     gamma_r = gamma.detach().clone().requires_grad_(True)
     v0_r = v0.detach().clone().requires_grad_(True)
     spike_r, _vpre_r, vfin_r = _fai_lif_python(
-        x_r, beta_r, gamma_r, v0_r, scale, zp, qmin, qmax, v_clamp
+        x_r, beta_r, gamma_r, v0_r, scale, zp, qmin, qmax, v_clamp, detach_carry
     )
     gspike = torch.randn_like(spike_r)
     gvfin = torch.randn_like(vfin_r)
-    loss_r = (spike_r * gspike).sum() + (vfin_r * gvfin).sum()
+    loss_r = (spike_r * gspike).sum()
+    if not detach_carry:  # detached: v_final is off the graph
+        loss_r = loss_r + (vfin_r * gvfin).sum()
     loss_r.backward()
 
     # Kernel grads.
@@ -129,7 +132,7 @@ def test_backward_matches_python_autograd(v_clamp, step):
     gamma_c = gamma.detach().clone().requires_grad_(True)
     v0_c = v0.detach().clone().requires_grad_(True)
     spike_c, _vpre_c, vfin_c = _FAILIFFunction.apply(
-        x_c, beta_c, gamma_c, v0_c, scale, zp, qmin, qmax, v_clamp
+        x_c, beta_c, gamma_c, v0_c, scale, zp, qmin, qmax, v_clamp, detach_carry
     )
     loss_c = (spike_c * gspike).sum() + (vfin_c * gvfin).sum()
     loss_c.backward()
@@ -140,6 +143,8 @@ def test_backward_matches_python_autograd(v_clamp, step):
         ("gamma", gamma_r.grad, gamma_c.grad),
         ("v0", v0_r.grad, v0_c.grad),
     ]:
+        if ref is None and detach_carry and name in ("gamma", "v0"):
+            ref = torch.zeros_like(got)  # no path once the carried membrane is detached
         assert ref is not None, f"reference grad for {name} is None"
         assert got is not None, f"kernel grad for {name} is None"
         max_diff = (ref - got).abs().max().item()
@@ -168,6 +173,23 @@ def test_membrane_clamp_bounds_the_state_and_its_gradient():
     raw1 = gamma * (vpre1[:, 0] - scale * ((vpre1[:, 0] / scale + zp).round().clamp(qmin, qmax) - zp))
     expected = gamma * (raw1.abs() <= bound).to(x.dtype)
     assert torch.allclose(x1.grad[:, 0], expected.detach())
+
+
+@MEMBRANE
+def test_detached_membrane_gradient_is_per_step(v_clamp, step):
+    """DECISIONS #20: with the carried membrane detached, each step's gradient
+    stays on that step: g_x = g_spike, g_beta = sum g_spike * v_prev, nothing
+    for gamma or v0, and the gradient on v_final is dropped."""
+    x, beta, gamma, v0, scale, zp, qmin, qmax = _make_inputs(B=3, T=16, H=32, scale=step)
+    x, beta, gamma, v0 = (t.clone().requires_grad_(True) for t in (x, beta, gamma, v0))
+    spike, vpre, vfin = _FAILIFFunction.apply(x, beta, gamma, v0, scale, zp, qmin, qmax, v_clamp, True)
+    gspike = torch.randn_like(spike)
+    ((spike * gspike).sum() + vfin.sum()).backward()
+    with torch.no_grad():
+        v_prev = torch.cat([v0[:, None], (vpre[:, 1:] - x[:, 1:]) / beta], dim=1)
+        assert torch.allclose(x.grad, gspike)
+        assert torch.allclose(beta.grad, (gspike * v_prev).sum((0, 1)), atol=1e-5, rtol=1e-4)
+    assert not gamma.grad.any() and not v0.grad.any()
 
 
 # ---------------------------------------------------------------------------

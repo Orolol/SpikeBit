@@ -49,5 +49,8 @@ def test_lif_config_switches_reach_every_lif():
     cfg = SpikingTernaryRWKVConfig.tiny()
     cfg.act_ste = "clipped"
     cfg.lif_membrane_clamp = 0.5
+    cfg.lif_membrane_grad = "detached"
     lifs = [m for m in SpikingTernaryRWKV(cfg).modules() if isinstance(m, FAILIF)]
-    assert lifs and all(m.ste_clip and m.membrane_clamp == 0.5 for m in lifs)
+    assert lifs and all(
+        m.ste_clip and m.membrane_clamp == 0.5 and m.membrane_grad == "detached" for m in lifs
+    )

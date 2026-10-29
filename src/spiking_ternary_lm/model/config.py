@@ -54,6 +54,9 @@ class SpikingTernaryRWKVConfig:
     # > 0: membrane clamped to ±lif_membrane_clamp · step after the reset
     # (anti-windup, DECISIONS #19). 0 = unbounded (legacy).
     lif_membrane_clamp: float = 0.0
+    # Gradient through the membrane carried across tokens: "bptt" (legacy)
+    # or "detached" (DECISIONS #20).
+    lif_membrane_grad: str = "bptt"
     # Bit-width of the FFN hidden FAI-LIF (relu² output); 0 = ``bits``.
     bits_ffn_hidden: int = 0
     # MinMax observer scope: "tensor" (one grid per activation tensor, NSLLM)

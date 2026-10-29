@@ -35,6 +35,9 @@
 //     g_beta   += g_v_pre * v_prev
 //     g_v_carry = g_v_pre * beta
 //   At t=0, g_v_carry becomes g_v0.
+//   detach_carry != 0 (DECISIONS #20): the membrane carried between steps
+//   (and v0, v_final) is detached, so g_v_carry = 0 at every step:
+//     g_x_t = g_spike, g_beta += g_spike * v_prev, g_gamma = g_v0 = 0.
 //
 // Notes:
 //  - scale/zp are NOT differentiated (per ste_quantize_integer; they come
@@ -122,6 +125,7 @@ __global__ void fai_lif_backward_kernel(
     const int qmin,
     const int qmax,
     const float v_clamp,                 // membrane bound / |scale|, <= 0: off
+    const int detach_carry,              // != 0: no gradient through the carried membrane
     const float* __restrict__ gspike,    // (B, T, H)
     const float* __restrict__ gv_final,  // (B, H)
     float* __restrict__ gx,              // (B, T, H)
@@ -173,6 +177,7 @@ __global__ void fai_lif_backward_kernel(
         const float v_prev_t = v_prev_buf[t];
         const float v_pre_t  = v_pre_buf[t];
         const float gspike_t = gspike_bc[t * H];
+        if (detach_carry) gv_carry = 0.0f;
 
         // Recompute dequant for the gamma gradient.
         float q = v_pre_t * inv_scale + zp;
@@ -207,7 +212,7 @@ __global__ void fai_lif_backward_kernel(
 
     gbeta_acc[b * H + h] = gbeta_local;
     ggamma_acc[b * H + h] = ggamma_local;
-    gv0[b * H + h] = gv_carry;
+    gv0[b * H + h] = detach_carry ? 0.0f : gv_carry;
 }
 
 // ---- Host-side launchers ------------------------------------------------
@@ -276,6 +281,7 @@ std::vector<torch::Tensor> fai_lif_backward_cuda(
     int64_t qmin,
     int64_t qmax,
     double v_clamp,
+    bool detach_carry,
     torch::Tensor gspike,
     torch::Tensor gv_final) {
     TORCH_CHECK(x.is_cuda() && x.dtype() == torch::kFloat32 && x.is_contiguous(),
@@ -307,7 +313,7 @@ std::vector<torch::Tensor> fai_lif_backward_cuda(
         gamma.data_ptr<float>(),
         v0.data_ptr<float>(),
         scale.data_ptr<float>(), zp.data_ptr<float>(), grid_stride,
-        (int)qmin, (int)qmax, (float)v_clamp,
+        (int)qmin, (int)qmax, (float)v_clamp, detach_carry ? 1 : 0,
         gspike.contiguous().data_ptr<float>(),
         gv_final.contiguous().data_ptr<float>(),
         gx.data_ptr<float>(),

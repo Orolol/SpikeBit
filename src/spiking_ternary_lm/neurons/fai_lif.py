@@ -276,6 +276,10 @@ class FAILIF(nn.Module):
         # > 0 ⇒ the membrane is clamped to ±membrane_clamp · step after the
         # reset (anti-windup, DECISIONS #19: 0.5 at rung 4b). 0 = unbounded.
         self.membrane_clamp = 0.0
+        # Gradient through the membrane carried to the next token: "bptt"
+        # (the fused paths' integrator gradient, gamma^k beta^k) or "detached"
+        # (DECISIONS #20; what the per-step path has always done).
+        self.membrane_grad = "bptt"
         self.lsq_init_steps = 1
         # Last integer spike tensor (LSQ mode only; output is dequantized).
         self.last_spike: Tensor | None = None
@@ -580,7 +584,7 @@ class FAILIF(nn.Module):
                 self.gamma.to(torch.float32).contiguous(),
                 self.v.to(torch.float32),
                 self.lsq_log_scale, self.lsq_zp, self.observer.qmin, self.observer.qmax,
-                self.ste_clip, self.membrane_clamp,
+                self.ste_clip, self.membrane_clamp, self.membrane_grad == "detached",
             )
             self.v = v_final.detach()
             # Integer spikes kept for the spike-stats hooks (the module
@@ -632,6 +636,7 @@ class FAILIF(nn.Module):
                 x_chunk, beta32, gamma32, v_curr,
                 scale_f, zp_f,
                 self.observer.qmin, self.observer.qmax, self.membrane_clamp,
+                self.membrane_grad == "detached",
             )
 
             # Per-step EMA updates for this chunk's timesteps.
@@ -655,7 +660,8 @@ class FAILIF(nn.Module):
             spike_chunks.append(spike_c)
             # Keep v_curr in the autograd graph across chunks so BPTT
             # works through the whole sequence (caller detaches between
-            # training windows via reset_state / detach_state).
+            # training windows via reset_state / detach_state). With
+            # membrane_grad "detached" the kernel drops that gradient.
             v_curr = v_final_c
 
         # Persist membrane state across calls.
@@ -788,6 +794,18 @@ def set_membrane_clamp(model: nn.Module, bound: float) -> int:
     for m in model.modules():
         if isinstance(m, FAILIF):
             m.membrane_clamp = float(bound)
+            n += 1
+    return n
+
+
+def set_membrane_grad(model: nn.Module, mode: str) -> int:
+    """Gradient through the carried membrane on every :class:`FAILIF`: "bptt" or "detached"."""
+    if mode not in ("bptt", "detached"):
+        raise ValueError(f"membrane grad must be 'bptt' or 'detached', got {mode!r}")
+    n = 0
+    for m in model.modules():
+        if isinstance(m, FAILIF):
+            m.membrane_grad = mode
             n += 1
     return n
 

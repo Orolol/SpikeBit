@@ -60,17 +60,20 @@ def test_lsq_step_and_offset_gradients(device, signed):
 
 @CUDA
 @pytest.mark.parametrize("v_clamp", [0.0, 0.5])
-def test_lsq_cuda_matches_python_reference(v_clamp):
+@pytest.mark.parametrize("detach_carry", [False, True])
+def test_lsq_cuda_matches_python_reference(v_clamp, detach_carry):
     qmin, qmax = 0, 15
     x, beta, gamma, v0 = _inputs("cuda")
+    x, beta = x.requires_grad_(True), beta.requires_grad_(True)
     s = torch.tensor(-0.69, device="cuda", requires_grad=True)
     off = torch.tensor(0.1, device="cuda", requires_grad=True)
     xh_c, spike_c, v_pre_c, v_final_c = lsq_fai_lif_apply(
-        x, beta, gamma, v0, s, off, qmin, qmax, False, v_clamp
+        x, beta, gamma, v0, s, off, qmin, qmax, False, v_clamp, detach_carry
     )
-    xc = x.cpu(); sc = s.detach().cpu().requires_grad_(True); offc = off.detach().cpu().requires_grad_(True)
+    xc = x.detach().cpu().requires_grad_(True); betac = beta.detach().cpu().requires_grad_(True)
+    sc = s.detach().cpu().requires_grad_(True); offc = off.detach().cpu().requires_grad_(True)
     xh_p, spike_p, v_pre_p, v_final_p = lsq_fai_lif_apply(
-        xc, beta.cpu(), gamma.cpu(), v0.cpu(), sc, offc, qmin, qmax, False, v_clamp
+        xc, betac, gamma.cpu(), v0.cpu(), sc, offc, qmin, qmax, False, v_clamp, detach_carry
     )
     assert torch.equal(spike_c.cpu(), spike_p)
     assert torch.allclose(v_pre_c.cpu(), v_pre_p, atol=1e-5)
@@ -80,6 +83,8 @@ def test_lsq_cuda_matches_python_reference(v_clamp):
     (xh_p * g).sum().backward()
     assert torch.allclose(s.grad.cpu(), sc.grad, atol=1e-5, rtol=1e-4)
     assert torch.allclose(off.grad.cpu(), offc.grad, atol=1e-5, rtol=1e-4)
+    assert torch.allclose(x.grad.cpu(), xc.grad, atol=1e-4, rtol=1e-3)
+    assert torch.allclose(beta.grad.cpu(), betac.grad, atol=1e-4, rtol=1e-3)
 
 
 def test_lsq_init_from_observer_then_learnable():
