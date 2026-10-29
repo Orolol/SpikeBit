@@ -115,6 +115,45 @@ def decompose_integer_to_binary(
     return out
 
 
+def decompose_signed_to_spikes(
+    n: Tensor,
+    T: int | None = None,
+    scheme: Scheme = "even",
+    bits: int = 4,
+) -> Tensor:
+    """Read signed counts as ±1 spikes over ``T`` virtual timesteps (DECISIONS #19).
+
+    A count ``n`` in ``[-2**(bits-1), 2**(bits-1) - 1]`` becomes ``|n|`` spikes
+    of sign ``sign(n)``, placed by ``scheme`` as in
+    :func:`decompose_integer_to_binary`. ``T`` defaults to ``2**(bits-1)``, the
+    largest magnitude. Returns ``(T, *n.shape)`` with values in ``{-1, 0, +1}``;
+    ``out.sum(0) == n`` and ``out.abs().sum(0) == |n|``.
+    """
+    if T is None:
+        T = 2 ** (bits - 1)
+    if T < 1:
+        raise ValueError(f"T must be >= 1, got {T}")
+    if not torch.is_floating_point(n) and n.dtype not in (torch.int32, torch.int64, torch.int8):
+        raise TypeError(f"unsupported dtype {n.dtype} for spike decomposition")
+    n_int = n.round().to(torch.int64)
+    lo, hi = -(2 ** (bits - 1)), 2 ** (bits - 1) - 1
+    if ((n_int < lo) | (n_int > hi)).any():
+        raise ValueError(f"signed {bits}-bit count outside [{lo}, {hi}]")
+    mag = n_int.abs()
+    if (mag > T).any():
+        raise ValueError(f"T={T} is smaller than the largest magnitude")
+    if scheme == "even":
+        body = _even_decomposition(mag, T)
+    elif scheme == "sequential":
+        body = _sequential_decomposition(mag, T)
+    else:
+        raise ValueError(f"unknown scheme {scheme!r}")
+    out = body * n_int.sign().unsqueeze(0)
+    if torch.is_floating_point(n):
+        out = out.to(n.dtype)
+    return out
+
+
 class BinaryLIF(nn.Module):
     """Stateless wrapper around :func:`decompose_integer_to_binary`.
 

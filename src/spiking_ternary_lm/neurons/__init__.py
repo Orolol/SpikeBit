@@ -1,4 +1,8 @@
-from spiking_ternary_lm.neurons.binary_lif import BinaryLIF, decompose_integer_to_binary
+from spiking_ternary_lm.neurons.binary_lif import (
+    BinaryLIF,
+    decompose_integer_to_binary,
+    decompose_signed_to_spikes,
+)
 from spiking_ternary_lm.neurons.fai_lif import FAILIF, FAILIFFixedThreshold, enable_lsq, set_calibrating, set_observer_scope
 from spiking_ternary_lm.neurons.surrogate import (
     ArcTanSurrogate,
@@ -14,6 +18,7 @@ __all__ = [
     "FastSigmoidSurrogate",
     "RectangularSurrogate",
     "decompose_integer_to_binary",
+    "decompose_signed_to_spikes",
     "enable_lsq",
     "set_calibrating",
     "set_observer_scope",
