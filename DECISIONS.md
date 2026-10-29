@@ -1188,3 +1188,43 @@ a4.8): a data-dependent threshold, not a fixed-step LIF. A threshold of
 ≤ 1.3 × rung 3 (the rung-3 4-bit threshold). An 8-bit pair at the same sites
 if 4 bits fails. Fine-tuning from the rung-3 checkpoints: cheaper, but a
 different budget from every other rung.
+
+---
+
+## Decision #23 — Budget ×2 diagnostic: the ladder replayed at 40 M tokens (2026-10-29)
+
+**Status:** accepted by Gaétan on 2026-10-29 (the three choices below were put
+to him before any ×2 measurement). DEC-15 plan B (b), applied to rung 5 after
+DEC-22.
+
+**Why.** Stage A's result is rung 5 at 92.5 % of rung 1 (4.986 / 5.391); DEC-1
+asks for 95 %. DEC-15 plan B (b) is "one run at 2 × the budget, to tell
+budget-limited from capacity-limited". Rung 5 alone at 2× against rung 1 at 1×
+cannot tell them apart: a longer fine-tuning improves the FP reference too, and
+the comparison would mix the gap closing with that general gain.
+
+**Protocol.**
+
+  1. Rung 1 and rung 5 retrained at 2 × the protocol budget: 20 k steps of
+     128 × 16 (41 M tokens), warmup 300, cosine over the 20 k steps, the LRs of
+     the 1× rungs (1e-3 and 3e-3, no new sweep), everything else as DEC-15,
+     DEC-16 and DEC-22 (rung-5 config, protocol eval, stateless windows). Seeds
+     0 and 1 for each. A ×2 run reads the text of its ×1 run first; the two
+     seeds stay on disjoint text up to ~28 k steps.
+  2. Rung 5 ×2 is distilled from rung 1 ×2 seed 0, as rung 5 is from rung 1 at
+     1×, so rung 1 ×2 runs first.
+  3. Criterion: ratio = mean PPL of rung 1 ×2 / mean PPL of rung 5 ×2.
+     Budget-limited if the ratio is ≥ 0.95 (DEC-1's target met at 2×);
+     otherwise not budget-limited at 2×. The next step is decided after the
+     result.
+  4. A diagnostic only: Stage A's result stays rung 5 at the protocol budget
+     (DEC-22). Adopting a larger budget for Stage A or C is a separate decision.
+  5. Secondary: each rung's gain from 1× to 2×, the trainer's eval every 2 k
+     steps, the eval check of DEC-22 point 4 on the rung-5 ×2 checkpoints, and
+     the warm eval.
+
+**Alternatives asked and not chosen.** Rung 5 alone at 2× against rung 1 at 1×
+(the letter of DEC-15 (b)). Rung 5 ×2 distilled from rung 1 ×1 seed 0: one
+variable changed for rung 5, but a teacher weaker than its denominator. A
+gap-closing criterion with an inconclusive band (gap PPL5 / PPL1 − 1 = 8.1 % at
+1×; ≤ 4.0 % budget, ≥ 6.1 % capacity). One seed per rung.
