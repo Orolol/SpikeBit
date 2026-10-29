@@ -372,4 +372,66 @@ compounded over 60 LIFs. After a soft reset the residual is a sawtooth of
 the input bounded in ±s/2, so this gradient does not describe the forward.
 The per-step path (`FAILIF._forward_step`) already detaches the carried
 membrane; only the kernel and its Python reference keep the integrator
-gradient. A fix changes DEC-19 point 2: DECISIONS #20 (proposed).
+gradient. A fix changes DEC-19 point 2: DECISIONS #20 (accepted 2026-10-29).
+
+## Rung 4b — carried membrane detached (DECISIONS #20, 2026-10-29)
+
+Runs `rung4b_a4_s{0,1}` (bundle `9b639c1`, `colab/ladder_rung4.py`, A100 40 GB,
+both at once, 13:57–14:46 UTC): the first attempt plus `--lif-membrane-grad
+detached`. The full test suite passed on the A100 at that commit (156 tests,
+CUDA kernel tests with and without the detached carry included).
+
+Pre-flight on `rung3l_a4_s0`, one CE step as in the diagnosis above
+(`runs/ladder/rung4b_preflight_detached.txt`): grad norm 0.381 with β = 0.9
+and the membrane detached, vs 0.293 with β = 0 and 6.5e15 with the BPTT
+gradient; the time-mix `lif_out` output gradient stays at 0.009–0.024 from
+block 11 to block 0. In training the grad norm follows rung 3 (0.91 vs 0.84
+at step 300; 0.31 vs 0.35 over steps 9 000–9 999 at seed 0).
+
+| run | PPL seed 0 | PPL seed 1 | mean | vs rung 3 |
+|---|---|---|---|---|
+| rung 3 (LSQ 4-bit, β = 0) | 5.389 | 5.267 | 5.328 | – |
+| rung 4b (β from 0.9, clamp ±s/2) | 5.590 | 5.497 | 5.543 | +4.0 % |
+
+Train CE over steps 9 000–9 999: 1.725 / 1.695 vs 1.687 / 1.655 for rung 3
+(KL 0.170 / 0.178 vs 0.139 / 0.148): the gap is in the fit, not only in the
+eval.
+
+**Secondary** (`runs/ladder/warm_cold_rung4b_colab.txt`, A100, 1 M tokens of
+the eval tail; script `runs/ladder_aborted/warm_cold_4b.py`):
+
+| run | cold | warm | cold, β set to 0 at eval |
+|---|---|---|---|
+| rung 4b, s0 / s1 | 5.585 / 5.491 | 4.833 / 4.763 | 5.584 / 5.468 |
+| rung 3, s0 (control, same VM) | 5.384 | 4.616 | – |
+
+  * β did not move: per-site mean 0.899, range 0.872–0.901 (init 0.9; LIF
+    group LR 5e-5, β gradient 5e-4 in the pre-flight). These runs test
+    β ≈ 0.9 held fixed, not a learned leak.
+  * The trained model does not use its membrane: with β set to 0 at eval
+    the cold PPL changes by −0.02 % / −0.4 %. Its weights are worse than
+    rung 3's even without the membrane (5.584 / 5.468 vs 5.384 / 5.262).
+    A reading the data fit, not tested: the carried residual (up to
+    0.45 · s) shifts each token's quantization during training, the
+    detached gradient does not see it, so it acts as noise.
+  * Warm: 4.798 vs 4.562 for rung 3 (+5.2 %). The control reproduces the
+    earlier A100 numbers (5.384 / 4.616).
+
+**Verdict** (DEC-19 point 3): rung 4b is worse than rung 3 on both seeds
+(+3.7 %, +4.4 %, inside the 5 % noise floor) and far from the retention
+threshold (< 5.062): **membrane memory is not kept**; the LIFs stay
+stateless 4-bit quantizers.
+
+## Rung 4 — outcome against the DEC-15 positioning note
+
+  * 4a: the spike reading is exact, but with ternary weights the INT4
+    baseline has no multiplication to remove and both readings skip zeros,
+    so `R ≥ 1` by construction (1.89 measured). An energy advantage needs
+    hardware where a 1-bit-operand accumulation costs less than 1/R of a
+    4-bit one (`R / 4 = 0.47` if cost ∝ operand width), and covers the
+    spike-native sites only: 27 % of the dense matmul MACs.
+  * 4b: no gain over rung 3.
+
+DEC-15: "If 4a shows no energy advantage and 4b no gain over rung 3, the
+project's claim should be revised, not the metric." Both hold, 4a up to that
+hardware assumption: DECISIONS #21 (proposed).

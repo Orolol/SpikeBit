@@ -1090,3 +1090,58 @@ membrane, so the two code paths disagree today.
 a gradient the forward does not have. The STE of the reset (`d(s·q)/dv_pre = 1`
 inside the grid) gives `dv_t/dv_pre_t = 0` inside the grid and, with the
 ±s/2 clamp, 0 outside: the same as point 1 except for γ's gradient.
+
+---
+
+## Decision #21 — Stage A closes at rung 3; the project's claim is revised (2026-10-29)
+
+**Status:** proposed, awaiting Gaétan. Applies the positioning note of
+DEC-15 after rung 4 (`results/stage_a_ladder.md`, rungs 4a and 4b).
+
+**Why.**
+
+  * Rung 4b (DEC-19, DEC-20): 5.543 vs 5.328 for rung 3, not kept; β stayed
+    at 0.9 and the trained model ignores its membrane (β set to 0 at eval:
+    −0.02 % / −0.4 %).
+  * Rung 4a: the spike reading is exact, `R = 1.89`. With ternary weights the
+    INT4 baseline has no multiplication to remove and both readings skip
+    zeros, so `R ≥ 1` always: an advantage exists only on hardware where a
+    1-bit-operand accumulation costs less than 1/R of a 4-bit one (`R / 4 =
+    0.47` if cost ∝ operand width), and only at the spike-native sites, 27 %
+    of the dense matmul MACs.
+  * DEC-15: "If 4a shows no energy advantage and 4b no gain over rung 3, the
+    project's claim should be revised, not the metric."
+  * Against DEC-1's Stage A target, with DEC-15's denominator: rung 1 /
+    rung 3 = 4.986 / 5.328 = 93.6 % (target ≥ 95 %), and DEC-1's "all
+    activations integer-spike" does not hold: 5 of the 7 BitLinears per
+    block (43 % of the dense MACs) take the FP LayerNorm output (DEC-15
+    rung 0 layout).
+
+**Proposal.**
+
+  1. Stage A's result is rung 3: RWKV-4-169M with ternary BitLinears and
+     4-bit LSQ activations at the 60 FAI-LIF sites, stateless LIFs, PPL
+     5.328 on the DEC-15 protocol (1.033 × rung 2, 1.069 × rung 1).
+  2. The claim (README, in place of "spiking ternary LM"): SpikeBit converts
+     RWKV-4-169M to ternary weights and 4-bit activations at the LIF sites
+     at 1.07 × the FP fine-tuned perplexity on TinyStories. The LIF neurons
+     act as stateless 4-bit quantizers; their outputs admit an exact ±1 spike
+     reading, which costs less than an INT4 × ternary baseline only where a
+     1-bit accumulation costs under ~half a 4-bit one, on 27 % of the matmul
+     work. A membrane carried across tokens brought no gain at this scale.
+     No energy claim without a hardware cost model.
+  3. Next step, one of:
+     a. A pre-registered rung 5: 4-bit LSQ LIFs on the FP-fed BitLinear inputs
+        (time-mix `W_r`, `W_k`, `W_v`, channel-mix `W_k`, `W_r`), as BitNet
+        a4.8 does. It is the missing part of DEC-1's "all activations
+        integer-spike" and brings the spike-native share from 27 % to 70 %
+        of the dense matmul MACs. Threshold and protocol to fix before the
+        runs (e.g. ≤ 1.1 × rung 3, noise rule of DEC-15).
+     b. Stage C (from scratch) on the rung-3 architecture, as chartered. DEC-1
+        says to redesign before Stage C if Stage A fails; rung 3 is under the
+        95 % target.
+     c. Stop here and write up Stage A.
+
+**Recommendation.** 1 and 2 as written, and 3a: it completes the Stage A the
+charter defines, and it is the setting where the spike-reading question
+covers most of the matmul work. 3b waits for that answer.
