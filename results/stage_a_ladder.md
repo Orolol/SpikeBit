@@ -435,3 +435,62 @@ stateless 4-bit quantizers.
 DEC-15: "If 4a shows no energy advantage and 4b no gain over rung 3, the
 project's claim should be revised, not the metric." Both hold, 4a up to that
 hardware assumption: DECISIONS #21 (proposed).
+
+## Rung 5 — every BitLinear input a 4-bit LIF output (DECISIONS #22, 2026-10-29)
+
+Runs `rung5_a4_s{0,1}` (bundle `87a0570`, `colab/ladder_rung5.py`, A100 40 GB,
+both at once, 15:26–16:29 UTC): rung 3 plus `--act-quant-inputs`, a stateless
+4-bit LSQ LIF on each token-shift mix (time-mix `xr`, `xk`, `xv`, channel-mix
+`xk`, `xr`), 120 LIFs in all. The full test suite passed on the A100 at that
+commit (159 tests).
+
+| run | PPL seed 0 | PPL seed 1 | mean | ratio to rung 3 (5.328) | threshold |
+|---|---|---|---|---|---|
+| rung 3 | 5.389 | 5.267 | 5.328 | – | – |
+| rung 5 | 5.444 | 5.338 | **5.391** | **1.012** | ≤ 1.1: pass |
+
+Per seed +1.0 % and +1.3 %. Train CE over steps 9 000–9 999: 1.698 / 1.669
+vs 1.687 / 1.655 (KL 0.147 / 0.156 vs 0.139 / 0.148). Ratio to rung 1:
+1.081, i.e. rung 1 / rung 5 = 92.5 % against DEC-1's ≥ 95 %.
+
+**Eval check** (`runs/ladder/analysis5/check_quant_rung5.txt`, A100, first
+32 windows of the eval tail, eval mode): all 120 LIFs in LSQ mode, every
+output on its grid (`max |q − round(q)|` ≤ 2.7e-2, bf16 rounding). In blocks
+0 and 11 the new input LIFs use all 16 levels with steps 0.029–0.115 and
+1–11 % of their outputs at the grid ends. With the same weights and FP
+activations the CE gets much worse (1.396 → 2.423 at seed 0, 1.400 → 2.338
+at seed 1; rung 3: 1.39 → 1.64): the model is fitted to its grids. (The
+"saturated" column of channel-mix `lif_k` counts its zeros: qmin = 0 on the
+unsigned relu² grid.)
+
+**Spike reading** (DEC-22 point 5; `scripts/rung4a_spike_reading.py` at
+`976bd64`, A100, `runs/ladder/analysis5/rung4a_rung5*`). Same protocol as 4a;
+seed 0 / seed 1:
+
+| site (pooled over 12 blocks) | consumer | E\|q\| | P(q ≠ 0) | E\|q\| given q ≠ 0 | R |
+|---|---|---|---|---|---|
+| time-mix `lif_xr` | `W_r` | 2.157 / 2.168 | 0.825 / 0.825 | 2.61 / 2.63 | 2.622 / 2.638 |
+| time-mix `lif_xk` | `W_k` | 2.225 / 2.242 | 0.842 / 0.843 | 2.64 / 2.66 | 2.650 / 2.669 |
+| time-mix `lif_xv` | `W_v` | 2.713 / 2.716 | 0.872 / 0.872 | 3.11 / 3.12 | 3.093 / 3.097 |
+| time-mix `lif_out` | `W_o` | 0.300 / 0.305 | 0.174 / 0.176 | 1.72 / 1.73 | 1.731 / 1.741 |
+| channel-mix `lif_xk` | `W_k` | 2.521 / 2.544 | 0.864 / 0.865 | 2.92 / 2.94 | 2.916 / 2.941 |
+| channel-mix `lif_k` (relu²) | `W_v` | 0.072 / 0.067 | 0.032 / 0.030 | 2.26 / 2.20 | 2.235 / 2.181 |
+| channel-mix `lif_xr` | `W_r` | 2.190 / 2.129 | 0.841 / 0.825 | 2.60 / 2.58 | 2.607 / 2.583 |
+
+  * Exact on real counts at all 14 checked sites (7 consumers × blocks 0
+    and 11). The extended script gives rung 3 seed 0 the same `R` as the
+    CPU run of 4a (1.8812).
+  * **Spike-native share: 70.4 % of the dense matmul MACs** (27 % at
+    rung 3); no BitLinear takes an FP input any more; the FP LM head is the
+    other 29.6 %.
+  * **R pooled = 2.796 / 2.810**, `R / 4` = 0.70: the new input sites are
+    dense (83–87 % non-zero, mean count 2.6–3.1 when non-zero), so the
+    spike reading costs 2.8 × the accumulations of INT4 × ternary at equal
+    add cost, and saves 30 % under the operand-width assumption of DEC-19.
+
+**Warm eval** (`runs/ladder/analysis5/warm_cold_rung5.txt`): 4.675 / 4.573,
+mean 4.624 vs 4.562 for rung 3 (1.014).
+
+**Verdict** (DEC-22 point 3): 1.012 ≤ 1.1, **rung 5 passes; Stage A's result
+is rung 5**: ternary weights and 4-bit activations at every BitLinear input,
+PPL 5.391, 1.081 × rung 1.

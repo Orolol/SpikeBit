@@ -4,13 +4,15 @@ Experimental research project: RWKV-4 architecture, ternary weights
 (BitNet b1.58 style, group-wise scale) and FAI-LIF neurons that quantize
 activations to 4-bit integers.
 
-**Claim (DECISIONS #21).** SpikeBit converts RWKV-4-169M to ternary weights and
-4-bit activations at the LIF sites at 1.07 × the FP fine-tuned perplexity on
-TinyStories. The LIF neurons act as stateless 4-bit quantizers; their outputs
-admit an exact ±1 spike reading, which costs less than an INT4 × ternary
-baseline only where a 1-bit accumulation costs under ~half a 4-bit one, on
-27 % of the matmul work. A membrane carried across tokens brought no gain at
-this scale. No energy claim without a hardware cost model.
+**Claim (DECISIONS #21, with the rung-5 numbers of DECISIONS #22).** SpikeBit
+converts RWKV-4-169M to ternary weights and 4-bit activations at every
+BitLinear input at 1.08 × the FP fine-tuned perplexity on TinyStories. The
+LIF neurons act as stateless 4-bit quantizers; their outputs admit an exact
+±1 spike reading, which takes 2.8 × the accumulations of an INT4 × ternary
+baseline, so it costs less only where a 1-bit accumulation costs under
+~1/2.8 of a 4-bit one (−30 % if cost ∝ operand width), on 70 % of the
+matmul work. A membrane carried across tokens brought no gain at this scale.
+No energy claim without a hardware cost model.
 
 Reference: Yao et al., *Neuromorphic spike-based large language model*,
 NSR, Dec 2025 (4-bit weights). SpikeBit pushes the weights to ternary.
@@ -40,11 +42,12 @@ stateless windows, 1 M tokens; two seeds per rung.
 | 3 | + 4-bit LSQ activations at the 60 LIF sites | **5.328** | 1.03 × rung 2 |
 | 4a | ±1 spike reading of rung 3 | exact; 1.9 × the accumulations of INT4 × ternary | – |
 | 4b | + membrane carried across tokens (β ≈ 0.9) | 5.543 | not kept |
+| 5 | rung 3 + 4-bit LIFs on every BitLinear input | **5.391** | 1.012 × rung 3 |
 
-Stage A's result is rung 3, at 93.6 % of rung 1 (target ≥ 95 %). Five of the
-seven BitLinears per block still take the FP LayerNorm output; quantizing
-those inputs is rung 5 (next, to be pre-registered). Embeddings, LM head and
-norms stay FP (DECISIONS #2). Stage C and the Phase 6 ablations are code
+Stage A's result is rung 5, at 92.5 % of rung 1 (DEC-1 target ≥ 95 %). Its
+spike reading: 2.8 × the accumulations of INT4 × ternary, on 70 % of the
+dense matmul MACs. Embeddings, LM head, norms, the WKV and the sigmoid gates
+stay FP (DECISIONS #2). Stage C and the Phase 6 ablations are code
 only, never run.
 
 **Done.** Phases 0–4: neurons (FAI-LIF with MinMax or LSQ grids, binary LIF,
