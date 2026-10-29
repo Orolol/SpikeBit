@@ -5,6 +5,7 @@ import torch
 
 from spiking_ternary_lm.model.config import SpikingTernaryRWKVConfig
 from spiking_ternary_lm.model.model import SpikingTernaryRWKV
+from spiking_ternary_lm.neurons.fai_lif import FAILIF
 
 
 def test_forward_shape():
@@ -42,3 +43,11 @@ def test_tie_word_embeddings():
     cfg.tie_word_embeddings = True
     model = SpikingTernaryRWKV(cfg)
     assert model.lm_head.weight.data_ptr() == model.embed.weight.data_ptr()
+
+
+def test_lif_config_switches_reach_every_lif():
+    cfg = SpikingTernaryRWKVConfig.tiny()
+    cfg.act_ste = "clipped"
+    cfg.lif_membrane_clamp = 0.5
+    lifs = [m for m in SpikingTernaryRWKV(cfg).modules() if isinstance(m, FAILIF)]
+    assert lifs and all(m.ste_clip and m.membrane_clamp == 0.5 for m in lifs)

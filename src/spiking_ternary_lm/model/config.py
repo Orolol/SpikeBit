@@ -51,6 +51,9 @@ class SpikingTernaryRWKVConfig:
     act_ste: str = "identity"
     # beta = 0 on every FAI-LIF: no membrane carried across tokens.
     lif_stateless: bool = False
+    # > 0: membrane clamped to ±lif_membrane_clamp · step after the reset
+    # (anti-windup, DECISIONS #19). 0 = unbounded (legacy).
+    lif_membrane_clamp: float = 0.0
     # Bit-width of the FFN hidden FAI-LIF (relu² output); 0 = ``bits``.
     bits_ffn_hidden: int = 0
     # MinMax observer scope: "tensor" (one grid per activation tensor, NSLLM)

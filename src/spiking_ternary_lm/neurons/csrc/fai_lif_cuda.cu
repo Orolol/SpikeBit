@@ -8,6 +8,8 @@
 //     spike   = clamp(round(q_float), qmin, qmax)  (INT)
 //     dequant = scale * (spike - zp)                (FP32, detached)
 //     v_new   = gamma[c] * (v_pre - dequant)
+//     v_new   = clamp(v_new, -v_clamp * |scale|, v_clamp * |scale|)
+//               (anti-windup, DECISIONS #19; v_clamp <= 0 disables it)
 //
 // Inputs:
 //   x          : (B, T, H)   FP32
@@ -18,6 +20,7 @@
 //                elements, derived from the observer; read on-device so the
 //                host never syncs
 //   qmin, qmax : ints
+//   v_clamp    : float, membrane bound in units of the step (0 = no bound)
 //
 // Outputs:
 //   spike_seq  : (B, T, H)   FP32 (integer-valued)
@@ -25,7 +28,7 @@
 //   v_final    : (B, H)      FP32 (carry state for next call)
 //
 // Backward (STE identity on the round/clamp):
-//   For each time step:
+//   For each time step (g_v_carry is zeroed where the membrane was bounded):
 //     g_v_pre   = g_spike + g_v_carry * gamma
 //     g_gamma  += g_v_carry * (v_pre - dequant)
 //     g_x_t     = g_v_pre
@@ -61,6 +64,7 @@ __global__ void fai_lif_forward_kernel(
     const int grid_stride,                // 0: per-tensor grid, 1: per-channel
     const int qmin,
     const int qmax,
+    const float v_clamp,                 // membrane bound / |scale|, <= 0: off
     float* __restrict__ spike_seq,       // (B, T, H)
     float* __restrict__ v_pre_seq,       // (B, T, H)
     float* __restrict__ v_final) {       // (B, H)
@@ -74,6 +78,7 @@ __global__ void fai_lif_forward_kernel(
     const float beta_c  = beta[h];
     const float gamma_c = gamma[h];
     const float inv_scale = 1.0f / scale;
+    const float v_bound = v_clamp * fabsf(scale);
 
     const int stride_bt = T * H;
     const float* x_bc       = x + b * stride_bt + h;
@@ -92,7 +97,8 @@ __global__ void fai_lif_forward_kernel(
         if (q > (float)qmax) q = (float)qmax;
         const float spike = q;
         const float dequant = scale * (spike - zp);
-        const float v_new = gamma_c * (v_pre - dequant);
+        float v_new = gamma_c * (v_pre - dequant);
+        if (v_clamp > 0.0f) v_new = fminf(fmaxf(v_new, -v_bound), v_bound);
 
         spike_bc[t * H] = spike;
         vpre_bc[t * H]  = v_pre;
@@ -115,6 +121,7 @@ __global__ void fai_lif_backward_kernel(
     const int grid_stride,                // 0: per-tensor grid, 1: per-channel
     const int qmin,
     const int qmax,
+    const float v_clamp,                 // membrane bound / |scale|, <= 0: off
     const float* __restrict__ gspike,    // (B, T, H)
     const float* __restrict__ gv_final,  // (B, H)
     float* __restrict__ gx,              // (B, T, H)
@@ -131,6 +138,7 @@ __global__ void fai_lif_backward_kernel(
     const float beta_c  = beta[h];
     const float gamma_c = gamma[h];
     const float inv_scale = 1.0f / scale;
+    const float v_bound = v_clamp * fabsf(scale);
 
     const int stride_bt = T * H;
     const float* x_bc        = x + b * stride_bt + h;
@@ -153,6 +161,7 @@ __global__ void fai_lif_backward_kernel(
         if (q > (float)qmax) q = (float)qmax;
         const float dequant = scale * (q - zp);
         v = gamma_c * (v_pre - dequant);
+        if (v_clamp > 0.0f) v = fminf(fmaxf(v, -v_bound), v_bound);
     }
 
     // ---- Pass 2: walk backward.
@@ -171,6 +180,11 @@ __global__ void fai_lif_backward_kernel(
         if (q < (float)qmin) q = (float)qmin;
         if (q > (float)qmax) q = (float)qmax;
         const float dequant = scale * (q - zp);
+
+        // A bounded membrane passes no gradient (torch.clamp convention:
+        // the bounds themselves are inside).
+        const float v_raw = gamma_c * (v_pre_t - dequant);
+        if (v_clamp > 0.0f && (v_raw < -v_bound || v_raw > v_bound)) gv_carry = 0.0f;
 
         // v_t = gamma * (v_pre_t - dequant)
         //  => d v_t / d gamma = (v_pre_t - dequant)
@@ -206,7 +220,8 @@ std::vector<torch::Tensor> fai_lif_forward_cuda(
     torch::Tensor scale,
     torch::Tensor zp,
     int64_t qmin,
-    int64_t qmax) {
+    int64_t qmax,
+    double v_clamp) {
     TORCH_CHECK(x.is_cuda(), "x must be CUDA");
     TORCH_CHECK(x.dtype() == torch::kFloat32, "x must be float32");
     TORCH_CHECK(x.is_contiguous(), "x must be contiguous");
@@ -244,7 +259,7 @@ std::vector<torch::Tensor> fai_lif_forward_cuda(
         gamma.data_ptr<float>(),
         v0.data_ptr<float>(),
         scale.data_ptr<float>(), zp.data_ptr<float>(), grid_stride,
-        (int)qmin, (int)qmax,
+        (int)qmin, (int)qmax, (float)v_clamp,
         spike_seq.data_ptr<float>(),
         v_pre_seq.data_ptr<float>(),
         v_final.data_ptr<float>());
@@ -260,6 +275,7 @@ std::vector<torch::Tensor> fai_lif_backward_cuda(
     torch::Tensor zp,
     int64_t qmin,
     int64_t qmax,
+    double v_clamp,
     torch::Tensor gspike,
     torch::Tensor gv_final) {
     TORCH_CHECK(x.is_cuda() && x.dtype() == torch::kFloat32 && x.is_contiguous(),
@@ -291,7 +307,7 @@ std::vector<torch::Tensor> fai_lif_backward_cuda(
         gamma.data_ptr<float>(),
         v0.data_ptr<float>(),
         scale.data_ptr<float>(), zp.data_ptr<float>(), grid_stride,
-        (int)qmin, (int)qmax,
+        (int)qmin, (int)qmax, (float)v_clamp,
         gspike.contiguous().data_ptr<float>(),
         gv_final.contiguous().data_ptr<float>(),
         gx.data_ptr<float>(),

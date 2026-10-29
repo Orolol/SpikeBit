@@ -273,6 +273,9 @@ class FAILIF(nn.Module):
         # True ⇒ beta = 0: no membrane carried across tokens, the LIF is a
         # plain quantizer (DECISIONS #15 rungs 0-3).
         self.stateless = False
+        # > 0 ⇒ the membrane is clamped to ±membrane_clamp · step after the
+        # reset (anti-windup, DECISIONS #19: 0.5 at rung 4b). 0 = unbounded.
+        self.membrane_clamp = 0.0
         self.lsq_init_steps = 1
         # Last integer spike tensor (LSQ mode only; output is dequantized).
         self.last_spike: Tensor | None = None
@@ -503,6 +506,9 @@ class FAILIF(nn.Module):
         # every step.
         spike_continuous = (scale_dt * (spike - zp_dt)).detach()
         new_v = gamma * (v_pre - spike_continuous)
+        if self.membrane_clamp > 0:
+            bound = self.membrane_clamp * scale_dt.abs()
+            new_v = torch.clamp(new_v, -bound, bound)
         self.v = new_v.detach()
         if self.act_quant == "lsq" and int(self.lsq_initialized) == 1:
             self.last_spike = spike.detach()
@@ -574,7 +580,7 @@ class FAILIF(nn.Module):
                 self.gamma.to(torch.float32).contiguous(),
                 self.v.to(torch.float32),
                 self.lsq_log_scale, self.lsq_zp, self.observer.qmin, self.observer.qmax,
-                self.ste_clip,
+                self.ste_clip, self.membrane_clamp,
             )
             self.v = v_final.detach()
             # Integer spikes kept for the spike-stats hooks (the module
@@ -625,7 +631,7 @@ class FAILIF(nn.Module):
             spike_c, v_pre_c, v_final_c = fai_lif_apply(
                 x_chunk, beta32, gamma32, v_curr,
                 scale_f, zp_f,
-                self.observer.qmin, self.observer.qmax,
+                self.observer.qmin, self.observer.qmax, self.membrane_clamp,
             )
 
             # Per-step EMA updates for this chunk's timesteps.
@@ -770,6 +776,18 @@ def set_stateless(model: nn.Module, flag: bool = True) -> int:
     for m in model.modules():
         if isinstance(m, FAILIF):
             m.stateless = bool(flag)
+            n += 1
+    return n
+
+
+def set_membrane_clamp(model: nn.Module, bound: float) -> int:
+    """Membrane bound ``±bound · step`` after the reset on every :class:`FAILIF`."""
+    if bound < 0:
+        raise ValueError(f"membrane clamp must be >= 0, got {bound}")
+    n = 0
+    for m in model.modules():
+        if isinstance(m, FAILIF):
+            m.membrane_clamp = float(bound)
             n += 1
     return n
 

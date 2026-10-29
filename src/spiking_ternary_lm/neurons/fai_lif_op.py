@@ -85,12 +85,14 @@ def _load_extension():
 
 def _fai_lif_python(
     x: Tensor, beta: Tensor, gamma: Tensor, v0: Tensor,
-    scale: Tensor, zp: Tensor, qmin: int, qmax: int,
+    scale: Tensor, zp: Tensor, qmin: int, qmax: int, v_clamp: float = 0.0,
 ) -> tuple[Tensor, Tensor, Tensor]:
     """Pure-PyTorch reference that mirrors the CUDA kernel exactly.
 
     Uses a FIXED ``scale``/``zp`` for all T steps (matching the kernel's
     contract — the observer EMA update is the host's responsibility).
+    ``v_clamp > 0`` bounds the membrane after the reset to
+    ``±v_clamp * |scale|`` (anti-windup, DECISIONS #19).
 
     All tensors FP32. Shapes match ``fai_lif_apply``.
     Returns (spike_seq (B,T,H), v_pre_seq (B,T,H), v_final (B,H)).
@@ -100,6 +102,10 @@ def _fai_lif_python(
     spikes = []
     v_pres = []
     inv_scale = 1.0 / scale
+    bound = (
+        v_clamp * torch.as_tensor(scale, dtype=v0.dtype, device=v0.device).abs()
+        if v_clamp > 0 else None
+    )
     for t in range(T):
         x_t = x[:, t]
         v_pre = beta * v + x_t
@@ -110,6 +116,8 @@ def _fai_lif_python(
         spike = v_pre + (q - v_pre).detach()
         dequant = (scale * (spike - zp)).detach()
         v_new = gamma * (v_pre - dequant)
+        if bound is not None:
+            v_new = torch.clamp(v_new, -bound, bound)
         spikes.append(spike)
         v_pres.append(v_pre)
         v = v_new
@@ -128,15 +136,16 @@ class _FAILIFFunction(torch.autograd.Function):
     def forward(
         ctx: Any,
         x: Tensor, beta: Tensor, gamma: Tensor, v0: Tensor,
-        scale: Tensor, zp: Tensor, qmin: int, qmax: int,
+        scale: Tensor, zp: Tensor, qmin: int, qmax: int, v_clamp: float = 0.0,
     ) -> tuple[Tensor, Tensor, Tensor]:
         # Undefined output grads arrive as ``None`` instead of zero
         # tensors, so backward can test them without a device sync.
         ctx.set_materialize_grads(False)
+        ctx._v_clamp = float(v_clamp)
         ext = _load_extension()
         if ext is None or not x.is_cuda:
             spike, v_pre, v_final = _fai_lif_python(
-                x, beta, gamma, v0, scale, zp, qmin, qmax
+                x, beta, gamma, v0, scale, zp, qmin, qmax, v_clamp
             )
             ctx.save_for_backward(x, beta, gamma, v0)
             ctx._scale = scale.detach() if isinstance(scale, Tensor) else float(scale)
@@ -156,7 +165,7 @@ class _FAILIFFunction(torch.autograd.Function):
         scale_t = torch.as_tensor(scale, dtype=torch.float32, device=x.device).reshape(-1).contiguous()
         zp_t = torch.as_tensor(zp, dtype=torch.float32, device=x.device).reshape(-1).contiguous()
         spike, v_pre, v_final = ext.forward(
-            x_c, beta_c, gamma_c, v0_c, scale_t, zp_t, int(qmin), int(qmax)
+            x_c, beta_c, gamma_c, v0_c, scale_t, zp_t, int(qmin), int(qmax), float(v_clamp)
         )
         ctx.save_for_backward(x_c, beta_c, gamma_c, v0_c, scale_t, zp_t)
         ctx._qmin = int(qmin)
@@ -197,26 +206,26 @@ class _FAILIFFunction(torch.autograd.Function):
         gspike = gspike.to(torch.float32).contiguous()
 
         if not getattr(ctx, "_use_cuda", False):
-            return _backward_python(
+            return *_backward_python(
                 x, beta, gamma, v0,
                 ctx._scale, ctx._zp, ctx._qmin, ctx._qmax,
-                gspike, gv_final,
-            )
+                gspike, gv_final, ctx._v_clamp,
+            ), None
 
         ext = _load_extension()
         gx, gbeta, ggamma, gv0 = ext.backward(
             x, beta, gamma, v0,
-            scale_t, zp_t, ctx._qmin, ctx._qmax,
+            scale_t, zp_t, ctx._qmin, ctx._qmax, ctx._v_clamp,
             gspike, gv_final,
         )
-        # No grads for scale, zp, qmin, qmax.
-        return gx, gbeta, ggamma, gv0, None, None, None, None
+        # No grads for scale, zp, qmin, qmax, v_clamp.
+        return gx, gbeta, ggamma, gv0, None, None, None, None, None
 
 
 def _backward_python(
     x: Tensor, beta: Tensor, gamma: Tensor, v0: Tensor,
     scale, zp, qmin: int, qmax: int,
-    gspike: Tensor, gv_final: Tensor,
+    gspike: Tensor, gv_final: Tensor, v_clamp: float = 0.0,
 ):
     """Python backward — used on CPU and as a numerical reference.
 
@@ -233,7 +242,7 @@ def _backward_python(
         scale_t = torch.as_tensor(scale, dtype=torch.float32, device=x.device)
         zp_t = torch.as_tensor(zp, dtype=torch.float32, device=x.device)
         spike, _v_pre, v_final = _fai_lif_python(
-            x_r, beta_r, gamma_r, v0_r, scale_t, zp_t, qmin, qmax
+            x_r, beta_r, gamma_r, v0_r, scale_t, zp_t, qmin, qmax, v_clamp
         )
         grads = torch.autograd.grad(
             (spike, v_final),
@@ -256,13 +265,15 @@ def _backward_python(
 
 def fai_lif_apply(
     x: Tensor, beta: Tensor, gamma: Tensor, v0: Tensor,
-    scale: Tensor, zp: Tensor, qmin: int, qmax: int,
+    scale: Tensor, zp: Tensor, qmin: int, qmax: int, v_clamp: float = 0.0,
 ) -> tuple[Tensor, Tensor, Tensor]:
     """Apply the fused FAI-LIF sequence forward.
 
     All inputs must be FP32. Returns ``(spike_seq, v_pre_seq, v_final)``.
+    ``v_clamp > 0`` bounds the membrane to ``±v_clamp * |scale|`` after the
+    reset (no gradient through a bounded membrane).
     """
-    return _FAILIFFunction.apply(x, beta, gamma, v0, scale, zp, qmin, qmax)
+    return _FAILIFFunction.apply(x, beta, gamma, v0, scale, zp, qmin, qmax, v_clamp)
 
 
 # --- LSQ variant: learned step size (Esser et al., ICLR 2020) ------------
@@ -299,6 +310,7 @@ class _LSQFAILIFFunction(torch.autograd.Function):
         ctx: Any,
         x: Tensor, beta: Tensor, gamma: Tensor, v0: Tensor,
         log_scale: Tensor, zp: Tensor, qmin: int, qmax: int, ste_clip: bool = False,
+        v_clamp: float = 0.0,
     ) -> tuple[Tensor, Tensor, Tensor, Tensor]:
         ctx.set_materialize_grads(False)
         s32 = log_scale.detach().to(torch.float32).reshape(()).exp()
@@ -308,12 +320,12 @@ class _LSQFAILIFFunction(torch.autograd.Function):
         if use_cuda:
             x_c, beta_c, gamma_c, v0_c = (t.contiguous() for t in (x, beta, gamma, v0))
             spike, v_pre, v_final = ext.forward(
-                x_c, beta_c, gamma_c, v0_c, s32, zp32, int(qmin), int(qmax)
+                x_c, beta_c, gamma_c, v0_c, s32, zp32, int(qmin), int(qmax), float(v_clamp)
             )
         else:
             x_c, beta_c, gamma_c, v0_c = x, beta, gamma, v0
             spike, v_pre, v_final = _fai_lif_python(
-                x, beta, gamma, v0, s32, zp32, qmin, qmax
+                x, beta, gamma, v0, s32, zp32, qmin, qmax, v_clamp
             )
             # The reference's STE trick (v + (q - v).detach()) leaves float
             # residue on the integers; snap them like the kernel's output.
@@ -324,6 +336,7 @@ class _LSQFAILIFFunction(torch.autograd.Function):
         ctx._qmax = int(qmax)
         ctx._use_cuda = use_cuda
         ctx._ste_clip = bool(ste_clip)
+        ctx._v_clamp = float(v_clamp)
         return x_hat, spike, v_pre, v_final
 
     @staticmethod
@@ -366,18 +379,20 @@ class _LSQFAILIFFunction(torch.autograd.Function):
         if ctx._use_cuda:
             ext = _load_extension()
             gx, gbeta, ggamma, gv0 = ext.backward(
-                x, beta, gamma, v0, s32, zp32, qmin, qmax, gspike, gv_final
+                x, beta, gamma, v0, s32, zp32, qmin, qmax, ctx._v_clamp, gspike, gv_final
             )
         else:
             gx, gbeta, ggamma, gv0, *_ = _backward_python(
                 x, beta, gamma, v0, float(s32), float(zp32), qmin, qmax, gspike, gv_final,
+                ctx._v_clamp,
             )
-        return gx, gbeta, ggamma, gv0, glog.reshape(()), gzp.reshape(()), None, None, None
+        return gx, gbeta, ggamma, gv0, glog.reshape(()), gzp.reshape(()), None, None, None, None
 
 
 def lsq_fai_lif_apply(
     x: Tensor, beta: Tensor, gamma: Tensor, v0: Tensor,
     log_scale: Tensor, zp: Tensor, qmin: int, qmax: int, ste_clip: bool = False,
+    v_clamp: float = 0.0,
 ) -> tuple[Tensor, Tensor, Tensor, Tensor]:
     """Fused FAI-LIF sequence forward with an LSQ-learnable grid.
 
@@ -386,6 +401,9 @@ def lsq_fai_lif_apply(
     v_pre_seq, v_final)`` with ``x_hat = s * (spike - zp)`` the dequantized
     output; gradients flow to ``x``, ``beta``, ``gamma``, ``v0``,
     ``log_scale`` and ``zp``. ``ste_clip`` zeroes the membrane gradient where
-    ``q`` is clipped (DEC-17).
+    ``q`` is clipped (DEC-17); ``v_clamp`` bounds the membrane to ``±v_clamp * s``
+    (DEC-19).
     """
-    return _LSQFAILIFFunction.apply(x, beta, gamma, v0, log_scale, zp, qmin, qmax, ste_clip)
+    return _LSQFAILIFFunction.apply(
+        x, beta, gamma, v0, log_scale, zp, qmin, qmax, ste_clip, v_clamp
+    )

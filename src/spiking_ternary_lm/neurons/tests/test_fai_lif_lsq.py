@@ -59,16 +59,22 @@ def test_lsq_step_and_offset_gradients(device, signed):
 
 
 @CUDA
-def test_lsq_cuda_matches_python_reference():
+@pytest.mark.parametrize("v_clamp", [0.0, 0.5])
+def test_lsq_cuda_matches_python_reference(v_clamp):
     qmin, qmax = 0, 15
     x, beta, gamma, v0 = _inputs("cuda")
     s = torch.tensor(-0.69, device="cuda", requires_grad=True)
     off = torch.tensor(0.1, device="cuda", requires_grad=True)
-    xh_c, spike_c, v_pre_c, v_final_c = lsq_fai_lif_apply(x, beta, gamma, v0, s, off, qmin, qmax)
+    xh_c, spike_c, v_pre_c, v_final_c = lsq_fai_lif_apply(
+        x, beta, gamma, v0, s, off, qmin, qmax, False, v_clamp
+    )
     xc = x.cpu(); sc = s.detach().cpu().requires_grad_(True); offc = off.detach().cpu().requires_grad_(True)
-    xh_p, spike_p, v_pre_p, v_final_p = lsq_fai_lif_apply(xc, beta.cpu(), gamma.cpu(), v0.cpu(), sc, offc, qmin, qmax)
+    xh_p, spike_p, v_pre_p, v_final_p = lsq_fai_lif_apply(
+        xc, beta.cpu(), gamma.cpu(), v0.cpu(), sc, offc, qmin, qmax, False, v_clamp
+    )
     assert torch.equal(spike_c.cpu(), spike_p)
     assert torch.allclose(v_pre_c.cpu(), v_pre_p, atol=1e-5)
+    assert torch.allclose(v_final_c.cpu(), v_final_p, atol=1e-5)
     g = torch.randn_like(spike_p)
     (xh_c * g.cuda()).sum().backward()
     (xh_p * g).sum().backward()

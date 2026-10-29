@@ -63,13 +63,19 @@ def _make_inputs(
 # ---------------------------------------------------------------------------
 
 
+# Unbounded membrane, and the rung-4b bound (DECISIONS #19) on a fine grid
+# where many outputs saturate, so the bound is active.
+MEMBRANE = pytest.mark.parametrize("v_clamp, step", [(0.0, 0.2), (0.5, 0.05)])
+
+
 @CUDA
-def test_forward_matches_reference():
+@MEMBRANE
+def test_forward_matches_reference(v_clamp, step):
     x, beta, gamma, v0, scale, zp, qmin, qmax = _make_inputs(
-        B=3, T=16, H=32, device="cuda"
+        B=3, T=16, H=32, device="cuda", scale=step
     )
-    spike_c, vpre_c, vfin_c = fai_lif_apply(x, beta, gamma, v0, scale, zp, qmin, qmax)
-    spike_r, vpre_r, vfin_r = _fai_lif_python(x, beta, gamma, v0, scale, zp, qmin, qmax)
+    spike_c, vpre_c, vfin_c = fai_lif_apply(x, beta, gamma, v0, scale, zp, qmin, qmax, v_clamp)
+    spike_r, vpre_r, vfin_r = _fai_lif_python(x, beta, gamma, v0, scale, zp, qmin, qmax, v_clamp)
     assert torch.allclose(spike_c, spike_r, atol=1e-5, rtol=1e-4), (
         f"spike max diff: {(spike_c - spike_r).abs().max().item():.4g}"
     )
@@ -98,9 +104,10 @@ def test_forward_spikes_are_integer_in_range():
 
 
 @CUDA
-def test_backward_matches_python_autograd():
+@MEMBRANE
+def test_backward_matches_python_autograd(v_clamp, step):
     x, beta, gamma, v0, scale, zp, qmin, qmax = _make_inputs(
-        B=3, T=16, H=32, device="cuda"
+        B=3, T=16, H=32, device="cuda", scale=step
     )
 
     # Reference grads via autograd on the Python forward.
@@ -109,7 +116,7 @@ def test_backward_matches_python_autograd():
     gamma_r = gamma.detach().clone().requires_grad_(True)
     v0_r = v0.detach().clone().requires_grad_(True)
     spike_r, _vpre_r, vfin_r = _fai_lif_python(
-        x_r, beta_r, gamma_r, v0_r, scale, zp, qmin, qmax
+        x_r, beta_r, gamma_r, v0_r, scale, zp, qmin, qmax, v_clamp
     )
     gspike = torch.randn_like(spike_r)
     gvfin = torch.randn_like(vfin_r)
@@ -122,7 +129,7 @@ def test_backward_matches_python_autograd():
     gamma_c = gamma.detach().clone().requires_grad_(True)
     v0_c = v0.detach().clone().requires_grad_(True)
     spike_c, _vpre_c, vfin_c = _FAILIFFunction.apply(
-        x_c, beta_c, gamma_c, v0_c, scale, zp, qmin, qmax
+        x_c, beta_c, gamma_c, v0_c, scale, zp, qmin, qmax, v_clamp
     )
     loss_c = (spike_c * gspike).sum() + (vfin_c * gvfin).sum()
     loss_c.backward()
@@ -139,6 +146,28 @@ def test_backward_matches_python_autograd():
         assert torch.allclose(ref, got, atol=1e-4, rtol=1e-3), (
             f"grad mismatch for {name}: max_diff={max_diff:.4g}"
         )
+
+
+def test_membrane_clamp_bounds_the_state_and_its_gradient():
+    """Anti-windup (DECISIONS #19): after every reset the membrane is within
+    ±v_clamp·s, and a bounded membrane passes no gradient back to v_pre."""
+    x, beta, gamma, v0, scale, zp, qmin, qmax = _make_inputs(B=3, T=16, H=32, scale=0.05)
+    bound = 0.5 * 0.05
+    _spike, vpre, vfin = _fai_lif_python(x, beta, gamma, v0, scale, zp, qmin, qmax, 0.5)
+    v_prev = (vpre[:, 1:] - x[:, 1:]) / beta          # membrane entering steps 1..T-1
+    assert v_prev.abs().max() <= bound + 1e-6 and vfin.abs().max() <= bound + 1e-6
+    # The grid saturates on this input, so the bound must have been active.
+    raw = gamma * (vpre - scale * ((vpre / scale + zp).round().clamp(qmin, qmax) - zp))
+    assert (raw.abs() > bound).any()
+
+    # One step: d v_final / d x is gamma inside the bound, 0 where it clamps.
+    x1 = x[:, :1].clone().requires_grad_(True)
+    v0z = torch.zeros_like(v0)
+    _s, vpre1, vfin1 = _fai_lif_python(x1, beta, gamma, v0z, scale, zp, qmin, qmax, 0.5)
+    vfin1.sum().backward()
+    raw1 = gamma * (vpre1[:, 0] - scale * ((vpre1[:, 0] / scale + zp).round().clamp(qmin, qmax) - zp))
+    expected = gamma * (raw1.abs() <= bound).to(x.dtype)
+    assert torch.allclose(x1.grad[:, 0], expected.detach())
 
 
 # ---------------------------------------------------------------------------
