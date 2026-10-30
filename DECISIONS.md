@@ -1233,10 +1233,10 @@ gap-closing criterion with an inconclusive band (gap PPL5 / PPL1 − 1 = 8.1 % a
 
 ## Decision #24 — Direction 2: the spike reading's cost against integer engines (2026-10-30)
 
-**Status:** proposed on 2026-10-30, after Gaétan chose this direction the same
-day; nothing below runs before he accepts it. Answers open question 1 of
-`results/stage_a_summary.md`: Stage A is written up with this accounting, and
-Stage C (DEC-1) is not started.
+**Status:** accepted by Gaétan on 2026-10-30, the day he chose this direction.
+Tier 1 started on acceptance; tiers 2 and 3 wait for his go. Answers open
+question 1 of `results/stage_a_summary.md`: Stage A is written up with this
+accounting, and Stage C (DEC-1) is not started.
 
 **Why.** The project's angle is spiking combined with ternary weights; ternary
 weights alone are well covered (BitNet b1.58, a4.8). Stage A found that the
