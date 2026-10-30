@@ -90,7 +90,9 @@ not enough to reach 95 % at 2×.
      through the carried membrane exploded (6.5e15, ×30 per block backward) and
      was detached (DEC-20). Trained that way, β stayed at its 0.9 init, the model
      ignored its membrane (β set to 0 at eval: −0.02 % / −0.4 %), and its
-     weights were worse than rung 3's.
+     weights were worse than rung 3's. Rung 4c (DEC-24, 2026-10-30) let β learn
+     (LIF LR 3e-3): β moved (0.03–0.95, mean 0.87), the PPL did not (5.523,
+     +3.7 % vs rung 3, not kept).
   5. **Spike reading** (rung 4a, rung 5). Exact by construction for BitLinear
      consumers. With ternary weights the INT4 baseline has no multiplication to
      remove and both readings skip zeros, so the accumulation ratio R ≥ 1:
@@ -170,3 +172,4 @@ Branch `rung0-equivalence`. Colab drivers in `colab/`; analysis scripts in
 | `rung5_a4_s0` / `_s1` | rung 5, Stage A's result | `c19948348dc88553` / `182eeebb75edad6a` |
 | `rung1x2_lr1e-3_s0` / `_s1` | rung 1 ×2; s0 is the KL teacher at 2× | `01c01e3f856cca71` / `f197e41359460f19` |
 | `rung5x2_a4_s0` / `_s1` | rung 5 ×2 | `02a8f912721a68e4` / `7940d58e8de56ecc` |
+| `rung4c_a4_s0` / `_s1` | rung 4c (DEC-24 tier 2) | `d8595d78a446bcfa` / `1ea613fedc954b95` |

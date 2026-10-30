@@ -73,7 +73,9 @@ covers random counts including the largest swing.
     45 ×, against 84 × for the integer engine.
 
 Where real hardware sits in these bands is the subject of
-`results/hardware_cost_note.md`.
+`results/hardware_cost_note.md`. Tier 2 (rung 4c, a membrane with a learned
+leak) is in `results/stage_a_ladder.md`: not kept, so the counts above, on
+stateless LIFs, stand.
 
 ## Per site
 

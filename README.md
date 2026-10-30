@@ -43,6 +43,7 @@ stateless windows, 1 M tokens; two seeds per rung.
 | 3 | + 4-bit LSQ activations at the 60 LIF sites | **5.328** | 1.03 × rung 2 |
 | 4a | ±1 spike reading of rung 3 | exact; 1.9 × the accumulations of INT4 × ternary | – |
 | 4b | + membrane carried across tokens (β ≈ 0.9) | 5.543 | not kept |
+| 4c | 4b with a learned leak (β 0.03–0.95) | 5.523 | not kept |
 | 5 | rung 3 + 4-bit LIFs on every BitLinear input | **5.391** | 1.012 × rung 3 |
 
 Stage A's result is rung 5, at 92.5 % of rung 1 (DEC-1 target ≥ 95 %). Its
@@ -52,7 +53,16 @@ dense matmul MACs. Diagnostic at 2 × the budget (DECISIONS #23): rung 1
 pre-registered rule, 0.75 % PPL short); the gap to rung 1 shrinks from 8.1 %
 to 6.1 %. Embeddings, LM head, norms, the WKV and the sigmoid gates
 stay FP (DECISIONS #2). Stage C and the Phase 6 ablations are code
-only, never run.
+only, never run; Stage C is set aside (DECISIONS #24).
+
+Since 2026-10-30 the project measures what the spike reading costs against
+integer engines running the same network (DECISIONS #24,
+`results/spike_accounting.md`, `results/hardware_cost_note.md`). Against an
+integer engine that skips zero activations, spikes need 1.7–3.4 × the
+accumulations at every site, and every sourced hardware figure prices a spike
+accumulation too high for them to win; against one that does not skip zeros
+they win only at the two sparse sites. Coding the change between tokens saves
+nothing.
 
 **Done.** Phases 0–4: neurons (FAI-LIF with MinMax or LSQ grids, binary LIF,
 surrogates), ternary STE + `BitLinear`, spiking RWKV-4 blocks, teacher
@@ -89,9 +99,12 @@ Micro-benchmarks: `scripts/bench_wkv.py`, `scripts/bench_fai_lif.py`.
 Diagnostics: `scripts/_diagnose_mlp.py`, `scripts/_diagnose_quantizer.py`.
 Stage A ladder: `scripts/rung0_equivalence.py`, `scripts/ladder_summary.py`,
 `scripts/rung4a_spike_reading.py`, `scripts/_check_quant.py`,
-`scripts/_diagnose_state_regime.py`, `scripts/_diagnose_act_scale.py`; the
+`scripts/_diagnose_state_regime.py`, `scripts/_diagnose_act_scale.py`,
+`scripts/_beta_stats.py`; the
 runs themselves are `scripts/train_stage_a.py` commands, driven on Colab by
 `colab/ladder_*.py` (commands in `results/stage_a_ladder.md`).
+Spike accounting (DECISIONS #24): `scripts/spike_accounting.py`,
+`scripts/accounting_tables.py`.
 
 `data/`, `checkpoints/` and `runs/` are git-ignored (≈ 63 GB of
 checkpoints locally; `stage_a_init_phase35.pt` is the converted 4-bit

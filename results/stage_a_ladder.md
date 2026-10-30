@@ -554,3 +554,46 @@ data put rung 5 at the threshold at 2×, not clearly under it; the
 pre-registered verdict is the binary one. Doubling the budget closes a
 quarter of the gap. Stage A's result stays rung 5 at the protocol budget
 (DEC-23 point 4).
+
+## Rung 4c — membrane with a learned leak (DECISIONS #24 tier 2, 2026-10-30)
+
+Runs `rung4c_a4_s{0,1}` (bundle `bd47d1d`, `colab/ladder_rung4.py`, A100 40 GB,
+both at once, 15:19–16:08 UTC): rung 4b exactly, with the LIF group (β, and γ,
+which gets no gradient) at the run's LR, `--lr-lif 3e-3` instead of 5e-5. The
+first VM was lost during the data upload, before any training; the runs above
+are on a second VM, started by `runs/ladder/analysis4c/wait_and_run_4c.py` once
+the data's sha256 matched.
+
+| run | PPL seed 0 | PPL seed 1 | mean | vs rung 3 |
+|---|---|---|---|---|
+| rung 3 (β = 0) | 5.389 | 5.267 | 5.328 | – |
+| rung 4b (β from 0.9, LIF LR 5e-5) | 5.590 | 5.497 | 5.543 | +4.0 % |
+| rung 4c (β from 0.9, LIF LR 3e-3) | 5.566 | 5.479 | **5.523** | +3.7 % |
+
+Train CE over steps 9 000–9 999: 1.721 / 1.694 (KL 0.167 / 0.177), vs 1.725 /
+1.695 for rung 4b and 1.687 / 1.655 for rung 3.
+
+**β moves this time** (`scripts/_beta_stats.py`,
+`runs/ladder/analysis4c/beta_stats.txt`): the mean over the 73 728 stateful
+neurons goes from 0.900 to 0.868 / 0.869, the per-site means to 0.84–0.88,
+and single neurons span 0.03–0.95 (rung 4b: 0.872–0.901). It stays high: under
+0.1 % of the neurons end below 0.1, over 99.9 % above 0.5.
+
+**The model still does not use its membrane**
+(`scripts/_diagnose_state_regime.py`,
+`runs/ladder/analysis4c/warm_cold_rung4c.txt`, 1 M tokens of the eval tail):
+
+| run | cold | warm | cold, β set to 0 at eval |
+|---|---|---|---|
+| rung 4c, s0 / s1 | 5.561 / 5.474 | 4.816 / 4.743 | 5.555 / 5.457 |
+| rung 4b, s0 / s1 | 5.585 / 5.491 | 4.833 / 4.763 | 5.584 / 5.468 |
+
+With β set to 0 the cold PPL improves by 0.1 % / 0.3 %. Warm, 4.780 vs 4.562
+for rung 3 (+4.8 %). β is learned under DEC-20's detached gradient, which sees
+only its effect within a token, not the residual carried to the next one.
+
+**Verdict** (DEC-24 point 7): 5.523 is far above the retention threshold
+(< 5.062), and within 0.4 % of rung 4b: **membrane memory is not kept**. The
+LIF learning rate was not what made rung 4b fail. Per DEC-24 point 8, "a
+membrane carried across tokens brought no gain" now holds with a learned leak
+too, learned under the detached gradient.
