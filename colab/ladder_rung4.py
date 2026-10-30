@@ -1,4 +1,5 @@
-"""Rung 4b runs (DECISIONS #19) on a Colab VM driven by the `colab` CLI.
+"""Rung 4b runs (DECISIONS #19) and rung 4c (DECISIONS #24 tier 2) on a Colab VM driven by the
+`colab` CLI.
 
 Same setup as ladder_rung3.py (code bundle extracted into /content/SpikeBit, pip install -e .
 ninja, KL teacher checkpoint and packed data uploaded). Each copy trains the runs named in the
@@ -8,6 +9,8 @@ racing for a run; the one in the kernel keeps the session busy:
     colab new -s rung4 --gpu A100
     colab exec -s rung4 --timeout 40000 --env RUNS=rung4b_a4_s0 -f colab/ladder_rung4.py
     (in `colab console`, under nohup) RUNS=rung4b_a4_s1 python /content/ladder_rung4.py
+
+Rung 4c the same way with RUNS=rung4c_a4_s0 and RUNS=rung4c_a4_s1.
 
 A finished run (`=== exit 0` in its pipeline.log) is skipped on re-run.
 """
@@ -39,7 +42,11 @@ TAIL = ["--seq-len", "128", "--batch-size", "16", "--reset-state-every", "1"]
 RUNG4B = ["--weight-quant", "ternary", "--act-quant", "lsq", "--ffn-relu-sq", "--act-grid", "faithful",
           "--act-output", "dequant", "--act-ste", "clipped", "--lif-membrane-clamp", "0.5",
           "--lif-membrane-grad", "detached", "--calibrate-batches", "8", "--bits", "4", *KL_ARGS]
-RUNS = {"rung4b_a4_s0": (0, RUNG4B), "rung4b_a4_s1": (1, RUNG4B)}
+# Rung 4c (DEC-24 tier 2): rung 4b with the LIF group (beta) at the run's LR instead of 5e-5,
+# so that the leak can be learned.
+RUNG4C = [*RUNG4B, "--lr-lif", "3e-3"]
+RUNS = {"rung4b_a4_s0": (0, RUNG4B), "rung4b_a4_s1": (1, RUNG4B),
+        "rung4c_a4_s0": (0, RUNG4C), "rung4c_a4_s1": (1, RUNG4C)}
 
 
 def now():
