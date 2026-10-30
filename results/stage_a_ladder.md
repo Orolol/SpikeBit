@@ -265,8 +265,8 @@ and config, by about the same margin as with the identity STE (`rung3c_*`,
 output at 8 bits buys only 0.5 % more; the gap between the two quantizers
 (×1.9) is far outside the noise rule (5 % floor).
 
-**Eval check** (suspicious-result rule, `runs/ladder/check_quant_*_colab.txt`,
-first 32 windows of the eval tail, eval mode). On `rung3l_a4_s{0,1}` and
+**Eval check** (suspicious-result rule, `scripts/_check_quant.py`,
+`runs/ladder/check_quant_*_colab.txt`, first 32 windows of the eval tail, eval mode). On `rung3l_a4_s{0,1}` and
 `rung3l_a4h8_s1`, all 60 FAI-LIFs are in LSQ mode and every output is on its
 grid (`max |q − round(q)|` ≤ 2.7e-2, bf16 rounding); in blocks 0 and 11 the
 4-bit LIFs use 10–16 levels, the 8-bit relu² output 181–184. With the same weights and
@@ -398,7 +398,8 @@ Train CE over steps 9 000–9 999: 1.725 / 1.695 vs 1.687 / 1.655 for rung 3
 eval.
 
 **Secondary** (`runs/ladder/warm_cold_rung4b_colab.txt`, A100, 1 M tokens of
-the eval tail; script `runs/ladder_aborted/warm_cold_4b.py`):
+the eval tail; `scripts/_diagnose_state_regime.py`, run from a copy then outside the
+repo, `runs/ladder_aborted/warm_cold_4b.py`):
 
 | run | cold | warm | cold, β set to 0 at eval |
 |---|---|---|---|
@@ -453,7 +454,7 @@ Per seed +1.0 % and +1.3 %. Train CE over steps 9 000–9 999: 1.698 / 1.669
 vs 1.687 / 1.655 (KL 0.147 / 0.156 vs 0.139 / 0.148). Ratio to rung 1:
 1.081, i.e. rung 1 / rung 5 = 92.5 % against DEC-1's ≥ 95 %.
 
-**Eval check** (`runs/ladder/analysis5/check_quant_rung5.txt`, A100, first
+**Eval check** (`scripts/_check_quant.py`, `runs/ladder/analysis5/check_quant_rung5.txt`, A100, first
 32 windows of the eval tail, eval mode): all 120 LIFs in LSQ mode, every
 output on its grid (`max |q − round(q)|` ≤ 2.7e-2, bf16 rounding). In blocks
 0 and 11 the new input LIFs use all 16 levels with steps 0.029–0.115 and
@@ -488,7 +489,7 @@ seed 0 / seed 1:
     spike reading costs 2.8 × the accumulations of INT4 × ternary at equal
     add cost, and saves 30 % under the operand-width assumption of DEC-19.
 
-**Warm eval** (`runs/ladder/analysis5/warm_cold_rung5.txt`): 4.675 / 4.573,
+**Warm eval** (`scripts/_diagnose_state_regime.py`, `runs/ladder/analysis5/warm_cold_rung5.txt`): 4.675 / 4.573,
 mean 4.624 vs 4.562 for rung 3 (1.014).
 
 **Verdict** (DEC-22 point 3): 1.012 ≤ 1.1, **rung 5 passes; Stage A's result
@@ -525,14 +526,14 @@ The full test suite passed on the A100 at that commit. During warmup the
     Median grad norm 0.34 / 0.33 (0.39 / 0.35 at 1×); the maximum is at step
     0, as at 1×.
 
-**Eval check** (`runs/ladder/analysis2x/check_quant_rung5x2.txt`, first 32
+**Eval check** (`scripts/_check_quant.py`, `runs/ladder/analysis2x/check_quant_rung5x2.txt`, first 32
 windows of the eval tail): all 120 LIFs in LSQ mode with every output on its
 grid (`max |q − round(q)|` ≤ 2.8e-2, bf16 rounding); CE 1.304 / 1.304, and
 2.671 / 2.718 with FP activations on the same weights (1.396 / 1.400 →
 2.423 / 2.338 at 1×). The ×2 model is fitted to its grids at least as much
 as the 1× one.
 
-**Warm eval** (`runs/ladder/analysis2x/warm_cold_2x.txt`, 1 M tokens of the
+**Warm eval** (`scripts/_diagnose_state_regime.py`, `runs/ladder/analysis2x/warm_cold_2x.txt`, 1 M tokens of the
 eval tail; cold reproduces the protocol PPL within 0.1 %):
 
 | run | cold | warm | CE at positions 32–127, cold / warm |

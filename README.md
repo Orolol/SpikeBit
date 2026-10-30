@@ -28,10 +28,11 @@ Two-stage validation plan (DECISIONS #1):
 
 All design decisions live in `DECISIONS.md` (numbered, immutable entries).
 
-## Status (2026-10-29)
+## Status (2026-10-30)
 
 Stage A was rebuilt as a measured ladder (DECISIONS #15–#23); results in
-`results/stage_a_ladder.md`. Protocol: last 1 % of TinyStories, seq 128,
+`results/stage_a_ladder.md`, summary and open questions in
+`results/stage_a_summary.md`. Protocol: last 1 % of TinyStories, seq 128,
 stateless windows, 1 M tokens; two seeds per rung.
 
 | rung | what changes | PPL | ratio |
@@ -86,14 +87,19 @@ uv run python scripts/eval_teacher.py              # teacher PPL reference
 
 Micro-benchmarks: `scripts/bench_wkv.py`, `scripts/bench_fai_lif.py`.
 Diagnostics: `scripts/_diagnose_mlp.py`, `scripts/_diagnose_quantizer.py`.
+Stage A ladder: `scripts/rung0_equivalence.py`, `scripts/ladder_summary.py`,
+`scripts/rung4a_spike_reading.py`, `scripts/_check_quant.py`,
+`scripts/_diagnose_state_regime.py`, `scripts/_diagnose_act_scale.py`; the
+runs themselves are `scripts/train_stage_a.py` commands, driven on Colab by
+`colab/ladder_*.py` (commands in `results/stage_a_ladder.md`).
 
-`data/`, `checkpoints/` and `runs/` are git-ignored (≈ 20 GB of
+`data/`, `checkpoints/` and `runs/` are git-ignored (≈ 63 GB of
 checkpoints locally; `stage_a_init_phase35.pt` is the converted 4-bit
 student, `stage_a_init_a8.pt` the 8-bit one).
 
 ## Tests
 
 ```fish
-uv run pytest                      # 95 CPU tests + 11 CUDA tests
+uv run pytest                      # 159 tests, 29 of them need CUDA
 CUDA_VISIBLE_DEVICES= uv run pytest   # CPU only (CUDA tests skip)
 ```

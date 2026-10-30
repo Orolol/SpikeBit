@@ -4,7 +4,9 @@ Cold = DECISIONS #15 protocol (fresh state per 128-token window). Warm = the
 eval tail split into 16 contiguous streams, state carried across windows.
 Also reports the CE by position inside the window. First 1 M tokens of the
 eval tail. Arguments: run names under ``checkpoints/ladder`` (``final.pt``),
-or ``teacher`` for the unquantized converted teacher.
+or ``teacher`` for the unquantized converted teacher. For a run with stateful
+LIFs (rung 4b), also the learned beta per LIF site and the cold eval with beta
+forced to 0 (membrane ablation).
 
     uv run python scripts/_diagnose_state_regime.py teacher rung1_lr3e-5_s0
 """
@@ -15,6 +17,7 @@ from spiking_ternary_lm.conversion.swap_layers import load_teacher_into_student
 from spiking_ternary_lm.eval.perplexity import protocol_eval_corpus
 from spiking_ternary_lm.model.config import SpikingTernaryRWKVConfig
 from spiking_ternary_lm.model.model import SpikingTernaryRWKV
+from spiking_ternary_lm.neurons.fai_lif import FAILIF, set_stateless
 from spiking_ternary_lm.training.data import tokenize_tinystories
 
 torch.set_grad_enabled(False)
@@ -56,6 +59,16 @@ out = {}
 for name in sys.argv[1:]:
     path = name if name == "teacher" else f"checkpoints/ladder/{name}/final.pt"
     m = load(path)
-    out[name] = {"cold": run(m, False), "warm": run(m, True)}
+    betas = {}
+    for n, mod in m.named_modules():
+        if isinstance(mod, FAILIF) and not mod.stateless:
+            site = n.split(".", 2)[2]
+            betas.setdefault(site, []).append(mod.beta.detach().float().cpu())
+    beta_stats = {k: {"mean": float(torch.cat(v).mean()), "min": float(torch.cat(v).min()),
+                      "max": float(torch.cat(v).max())} for k, v in betas.items()}
+    out[name] = {"cold": run(m, False), "warm": run(m, True), "beta": beta_stats}
+    if beta_stats:
+        set_stateless(m)
+        out[name]["cold_beta0"] = run(m, False)
     print(name, json.dumps(out[name]), flush=True)
     del m; torch.cuda.empty_cache()
