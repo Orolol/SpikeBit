@@ -1228,3 +1228,136 @@ the comparison would mix the gap closing with that general gain.
 variable changed for rung 5, but a teacher weaker than its denominator. A
 gap-closing criterion with an inconclusive band (gap PPL5 / PPL1 − 1 = 8.1 % at
 1×; ≤ 4.0 % budget, ≥ 6.1 % capacity). One seed per rung.
+
+---
+
+## Decision #24 — Direction 2: the spike reading's cost against integer engines (2026-10-30)
+
+**Status:** proposed on 2026-10-30, after Gaétan chose this direction the same
+day; nothing below runs before he accepts it. Answers open question 1 of
+`results/stage_a_summary.md`: Stage A is written up with this accounting, and
+Stage C (DEC-1) is not started.
+
+**Why.** The project's angle is spiking combined with ternary weights; ternary
+weights alone are well covered (BitNet b1.58, a4.8). Stage A found that the
+LIFs end up as stateless 4-bit quantizers and that the exact ±1 spike reading
+of rung 5 needs 2.8 × the accumulations of a zero-skipping INT4 × ternary
+engine (DEC-21, DEC-22). That is a negative result about the angle; this DEC
+makes it one a reviewer cannot take apart. Three points are not solid enough
+for that yet:
+
+  * The verdict depends on the baseline. DEC-19 counts against an engine that
+    skips zero activations, the strictest one. Against an engine that does
+    not, sparse sites can favour spikes. A back-of-envelope made before this
+    entry, from the `E|q|` of the 4a tables weighted by the consumers' MACs,
+    puts the spike reading at ≈ 0.12 × the accumulations of such an engine on
+    rung 3's two spike-native sites and ≈ 1.5 × over rung 5's seven. Tier 1
+    replaces these numbers.
+  * The SNN papers price an accumulation at 0.9 pJ against a 4.6 pJ FP32 MAC
+    (Horowitz, 45 nm). Applied to our model, that accounting would show a
+    large saving; the write-up has to show where it comes from.
+  * "A membrane brings nothing" rests on rung 4b, where β did not move from its
+    0.9 init (LIF group LR 5e-5): it tested β ≈ 0.9 held fixed, not a learned
+    leak.
+
+**Tier 1 — counts on the existing checkpoints (CPU, no training).**
+
+  1. Checkpoints `rung3l_a4_s{0,1}` and `rung5_a4_s{0,1}`, plus
+     `rung5x2_a4_s{0,1}` as a budget check, on the 4a protocol: first 256
+     windows of 128 tokens of the eval tail, fresh state per window, eval
+     mode. A new script, `scripts/spike_accounting.py`, extends
+     `rung4a_spike_reading.py`. It must reproduce the 4a `R` values to three
+     decimals (1.881 for rung 3 seed 0; 2.796 / 2.810 for rung 5) before any
+     new number is used.
+  2. For a ternary consumer `W` (out × in), with `c_i = nnz(W[:, i])` (weight
+     zeros are static, so every engine skips them) and the input counts `q_i`
+     of one token, the accumulations per token of five engines:
+       * D, integer, dense activations: `Σ_i c_i`;
+       * Z, integer, zero activations skipped (DEC-19's baseline):
+         `Σ_i 1{q_i ≠ 0} c_i`;
+       * S, the ±1 spike reading: `Σ_i |q_i| c_i`;
+       * ΔZ and ΔS: Z and S applied to the change between consecutive tokens,
+         `Δq_t = q_t − q_{t−1}` within a window (`Δq_0 = q_0`). The consumer
+         keeps its previous output, `y_t = y_{t−1} + W Δq_t`, exact in
+         integers. ΔZ adds 5-bit operands; it is priced as Z.
+     Reported per site (pooled over the blocks), per block, and pooled per
+     model: the counts, `P(q ≠ 0)`, `E|q|`, `P(Δq ≠ 0)`, `E|Δq|`. Also the
+     per-token FP work outside the BitLinears (LM head, WKV, gates, norms,
+     token-shift mixes), so that whole-model ratios sit beside the BitLinear
+     ones. A unit test checks that the Δ spike reading reproduces the integer
+     outputs exactly.
+  3. Cost model. An accumulation into the same accumulator costs `a` with a
+     4-bit operand and `ρ · a` with a spike. Spikes are cheaper than engine X
+     at a site when `ρ < ρ*`, with `ρ* = ops_X / ops_S`. Pairs are like with
+     like: S against D and Z, ΔS against ΔZ. Cross pairs (ΔS against Z) are
+     reported only to show which saving comes from what. The verdict per site
+     and pooled is fixed now, with DEC-19 point 4's two pricings as the bounds
+     of ρ:
+       * `ρ* > 1`: spikes cheaper even at equal add cost;
+       * `ρ* < 1/4`: spikes dearer even with a spike priced as a 1-bit operand;
+       * otherwise: depends on the hardware, `ρ*` stated.
+     Against Z, `R ≥ 1` gives `ρ* ≤ 1` by construction, and likewise against
+     ΔZ; only D can give the first verdict.
+  4. The SNN papers' accounting on rung 5, computed as they compute it: spike
+     operations = firing rate × T × the layer's MACs (no weight-zero skipping)
+     at 0.9 pJ, against the same layers' MACs at 4.6 pJ for the FP model, with
+     and without the FP LM head. The ratio is then split into its factors along
+     F (FP32, dense) → D → Z → S: removing the multiplications (ternary
+     weights, available to D), skipping zeros (available to Z), and the spike
+     count (`R`, a cost). Prices come from the cited sources only.
+  5. Hardware cost note, `results/hardware_cost_note.md`: where real hardware
+     sits in [1/4, 1]. In event-driven hardware each accumulation also fetches
+     a synaptic weight at cost `f`, so the effective ratio is
+     `(ρ a + f) / (a + f)`, between ρ and 1. S fetches once per spike unless
+     it groups a source's spikes, and a grouped count is the integer reading.
+     The note collects per-operation and per-synaptic-event energies from
+     published sources (Horowitz, ISSCC 2014; the Loihi, Loihi 2, TrueNorth
+     and SpiNNaker 2 papers), each cited. It places hardware points inside the
+     bands of point 3; it does not move them.
+
+**Tier 2 — membrane with a learned leak (A100, ≈ 1 h, can run alongside
+tier 1).**
+
+  6. Rung 4c is rung 4b exactly (DEC-19, DEC-20): β learnable from 0.9, γ = 1,
+     clamp ±s/2, carried membrane detached, KL to rung 1 seed 0, LR 3e-3,
+     10 k steps, DEC-16 regime, seeds 0 and 1. The one change is the LIF group
+     at the run's LR, `--lr-lif 3e-3` instead of 5e-5. No LR sweep; a run that
+     diverges is reported as such, with no fallback run.
+  7. Kept only if the mean PPL beats rung 3 by more than the noise rule,
+     below 5.062 (DEC-19 point 3). Secondary: β per site (mean, range, share
+     of neurons below 0.1 and above 0.5), the cold eval with β set to 0, the
+     warm eval.
+  8. If kept, the tier-1 counts are repeated on rung 4c, the claim that the
+     membrane brings nothing is withdrawn, and a membrane on rung 5 is put to
+     Gaétan as a new DEC. If not kept, "a membrane carried across tokens
+     brought no gain" holds with a learned leak.
+
+**Tier 3 — general text (A100 ≈ 2.5 h plus a download; on Gaétan's go after
+tier 1).**
+
+  9. Rungs 1 and 5 retrained on a general corpus; WikiText-103 raw is proposed
+     (≈ 0.2–0.3 GB, asked before downloading). The DEC-15/16/22 protocol
+     applies with that corpus in place of TinyStories: eval on the first 1 M
+     tokens of its last 1 %, the LRs of the TinyStories rungs (no new sweep),
+     rung 5 distilled from rung 1 seed 0, seeds 0 and 1.
+ 10. Reported: the rung 1 / rung 5 ratio, and the tier-1 counts on the
+     general-text rung 5. The accounting holds on general text if no site
+     changes verdict band; otherwise the write-up states the change.
+
+**Output.** `results/spike_accounting.md`, with each table's command, commit
+and checkpoints as in `results/stage_a_ladder.md`, and the hardware note. The
+claim is written from the verdict table, per site and per baseline; a pJ total
+appears only with its prices next to it. Whether it goes out as an arXiv
+paper or a blog post is decided separately: that changes the depth of the
+related work (SpikeGPT, NSLLM, BitNet a4.8), not the measurements.
+
+**Not in scope.** Closing the 92.5 % gap (×4 budget, other quantizers), which
+is a ternary-only question. Stage C. Running on neuromorphic hardware or an
+FPGA (out of scope for v0 per DEC-1), and a cycle-level simulator: the note
+uses published figures. The warm eval of rung 1 at 1×.
+
+**Alternatives not chosen.** A pJ total as the headline (DEC-19: the verdict
+would rest on the constants). A fixed β grid {0.5, 0.9, 0.99} (6 runs; 4b
+already covers 0.9). A membrane on rung 5's 120 LIFs (two changes from 4b at
+once). Rung 3 in tier 3 (its spike-native sites are inside rung 5). Delta
+coding counted for the spike reading only (integer engines can use it too).
