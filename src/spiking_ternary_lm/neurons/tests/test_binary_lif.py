@@ -119,6 +119,24 @@ def test_spike_reading_is_exact_through_a_ternary_bitlinear(scheme, signed):
     assert torch.allclose(via_spikes, bl.forward_integer(q, s, zp), rtol=1e-5, atol=1e-5)
 
 
+@pytest.mark.parametrize("signed", [True, False])
+def test_delta_spike_reading_is_exact_through_a_ternary_bitlinear(signed):
+    """DECISIONS #24 tier 1: the changes ``dq_t = q_t - q_{t-1}`` (``dq_0 = q_0``)
+    of 4-bit counts, read as ±1 spikes on a signed 5-bit grid (T = 16) and summed
+    over the tokens, give the integer-path output ``W q_t``."""
+    torch.manual_seed(0)
+    lo, hi = (-8, 7) if signed else (0, 15)
+    q = torch.randint(lo, hi + 1, (4, 12, 64)).to(torch.float64)
+    q[:, 0::2, 0], q[:, 1::2, 0] = lo, hi  # the largest swing, |dq| = 15
+    dq = q - torch.nn.functional.pad(q, (0, 0, 1, 0))[:, :-1]
+    assert dq.abs().max() == 15
+    spikes = decompose_signed_to_spikes(dq, bits=5)
+    assert spikes.shape[0] == 16
+    ternary = BitLinear(64, 24, group_size=32).pack_weights()[0].to(torch.float64)
+    per_token = torch.stack([s @ ternary.T for s in spikes]).sum(0)
+    assert torch.equal(per_token.cumsum(1), q @ ternary.T)
+
+
 def test_signed_spikes_reject_out_of_range_counts():
     with pytest.raises(ValueError):
         decompose_signed_to_spikes(torch.tensor([8.0]), bits=4)
