@@ -2,7 +2,7 @@
 Draft of the arXiv note (DECISIONS #24; plan in writeup/plan.md). Markdown with
 LaTeX math, to convert once a TeX toolchain is chosen. Every number is in
 results/ with its command and commit. [TIER 3] marks what waits for the
-general-text runs. References marked (to verify) were not read for this draft.
+general-text runs.
 Revision 2 (2026-10-31) applies an internal review: scope of R, the
 pre-registration sentence, the encodings of the cited spiking LMs, structure.
 -->
@@ -78,7 +78,7 @@ measurement on the same checkpoints.
 
 ## 2. Setting
 
-**Model.** RWKV-4-169M [Peng et al. 2023 (to verify)]: 12 blocks of width 768,
+**Model.** RWKV-4-169M [Peng et al. 2023]: 12 blocks of width 768,
 each with a time mix (the WKV recurrence) and a channel mix (a relu² MLP of
 width 3072). Each block first mixes every token with the previous one,
 $x_t' = \mu \odot x_t + (1 - \mu) \odot x_{t-1}$ ("token shift"), separately
@@ -90,7 +90,7 @@ norms, the WKV recurrence and the sigmoid gates stay in floating point.
 
 **Neurons.** Our integer LIF neuron (FAI-LIF), after NSLLM, quantizes its
 input to a 4-bit count $q$ per token on a learned grid (LSQ step size
-[Esser et al. 2020 (to verify)], clipped straight-through gradient) and
+[Esser et al. 2020], clipped straight-through gradient) and
 outputs $s \cdot q$; signed sites use $q \in [-8, 7]$, the channel-mix relu²
 output $q \in [0, 15]$. The final model has 120 such neuron sites: one on
 each of the 7 projection inputs of each block, plus the WKV inputs $k$, $v$ and
@@ -98,7 +98,7 @@ the channel-mix output. They are stateless (leak $\beta = 0$); Section 7 tests
 a membrane.
 
 **Training and evaluation.** Fine-tuning on 20.5 M tokens of TinyStories
-[Eldan & Li 2023 (to verify)], 10 k steps of 16 × 128 tokens; quantized models
+[Eldan & Li 2023], 10 k steps of 16 × 128 tokens; quantized models
 add a KL term to the full-precision fine-tuned model. Perplexity on the first
 1 M tokens of the last 1 % of the corpus, in 128-token windows each started
 from a fresh state. Two seeds per configuration on disjoint text; a difference
@@ -378,9 +378,11 @@ doi:10.3389/fnins.2021.651141.
 Davies, M. et al. Loihi: A neuromorphic manycore processor with on-chip
 learning. IEEE Micro 38(1), 2018. doi:10.1109/MM.2018.112130359.
 
-Eldan, R., Li, Y. TinyStories. arXiv:2305.07759, 2023 (to verify).
+Eldan, R., Li, Y. TinyStories: How small can language models be and still
+speak coherent English? arXiv:2305.07759, 2023.
 
-Esser, S. K. et al. Learned step size quantization. ICLR 2020 (to verify).
+Esser, S. K., McKinstry, J. L., Bablani, D., Appuswamy, R., Modha, D. S.
+Learned step size quantization. ICLR 2020. arXiv:1902.08153.
 
 Han, S. et al. EIE: Efficient inference engine on compressed deep neural
 network. ISCA 2016. arXiv:1602.01528.
@@ -419,8 +421,8 @@ O'Connor, P., Welling, M. Sigma delta quantized networks. arXiv:1611.02024,
 Parashar, A. et al. SCNN: An accelerator for compressed-sparse convolutional
 neural networks. ISCA 2017. arXiv:1708.04485.
 
-Peng, B. et al. RWKV: Reinventing RNNs for the Transformer era. Findings of
-EMNLP 2023 (to verify).
+Peng, B. et al. RWKV: Reinventing RNNs for the Transformer era.
+arXiv:2305.13048, 2023.
 
 Wang, H., Ma, S., Wei, F. BitNet a4.8: 4-bit activations for 1-bit LLMs.
 arXiv:2411.04965, 2024.
