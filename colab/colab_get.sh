@@ -6,7 +6,7 @@
 #   COLAB_SESSION=tier3 bash colab/colab_get.sh [--ckpt] RUN...
 set -eu
 S=${COLAB_SESSION:?set COLAB_SESSION}
-R=/home/orosius/workspace/SpikeBit
+R=$(dirname "$(git -C "$(dirname "$0")" rev-parse --path-format=absolute --git-common-dir)")
 CKPT=0; [ "${1:-}" = "--ckpt" ] && { CKPT=1; shift; }
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
 for r in "$@"; do
