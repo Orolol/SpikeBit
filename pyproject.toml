@@ -9,7 +9,7 @@ description = "Spiking Ternary Language Model: RWKV-4 + FAI-LIF integer spikes +
 readme = "README.md"
 requires-python = ">=3.12,<3.14"
 license = { text = "MIT" }
-authors = [{ name = "Gaétan" }]
+authors = [{ name = "Gaétan Martin" }]
 
 # Notes on the torch pin:
 #   * sm_120 (RTX 5090 / Blackwell) needs CUDA wheels compiled for cu126.
