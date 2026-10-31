@@ -32,24 +32,35 @@ table: 3–10 times the add (`a` = 0.03–0.1 pJ). Per non-zero weight it is
 0.46 pJ when the zeros are stored (1 in 1.47 weights is non-zero); the table
 below uses 0.31 pJ, the value most favourable to spikes.
 
-A spike engine that processes each spike as its own event reads the column once
-per spike, so the fetch scales with S like the add. Grouping a source's spikes
-into one read means holding the count, which is the integer reading. With the
-fetch, the effective ratio is `ρ_eff = (ρ a + f) / (a + f)`:
+How often the weight is read depends on the design (revised 2026-10-31; the
+first version said grouping a source's spikes amounts to the integer reading,
+which is wrong):
+
+  * **(a) One event per spike, weight read per event**, as event-driven chips
+    do. S costs `S (ρ a + f)` against `Z (a + f)` for Z: spikes are cheaper
+    only if `ρ_eff = (ρ a + f) / (a + f) < 1/R`.
+  * **(b) Weight held in a register across a source's `|q|` spikes.** The read
+    is paid once per non-zero input in both engines, `Z f + S ρ a` against
+    `Z (f + a)`, and drops out: spikes are cheaper only if `ρ < 1/R`, the
+    adder-only question of section 1, which no figure here settles.
+
+For design (a):
 
 | `a` (add) | `f` (fetch, 8 KB SRAM) | `ρ_eff` at `ρ = 1/4` | at `ρ = 1` |
 |---|---|---|---|
 | 0.03 pJ (8-bit row) | 0.31 pJ | 0.93 | 1 |
 | 0.1 pJ (32-bit row) | 0.31 pJ | 0.82 | 1 |
 
-A larger memory raises `f` and pushes `ρ_eff` closer to 1.
+A larger memory raises `f` and pushes `ρ_eff` closer to 1. For design (b) these
+figures say nothing.
 
 Davidson and Furber (Frontiers in Neuroscience 15:651141, 2021) build the same
 argument from SpiNNaker 2 post-layout figures (22 nm): with `E` the energy of
 an addition, a weight read costs about `5E`, a spike event `7E` (weight read,
 membrane read and write, addition) and a multiply-accumulate event `12E`. With
 ternary weights there is no multiplication, so an integer event that skips
-zeros costs the same `7E` as a spike event: `ρ ≈ 1`.
+zeros costs the same `7E` as a spike event: `ρ ≈ 1`. Their model is design (a):
+every spike event reads its weight and the target state.
 
 ## 3. Event-driven chips charge per event, not per bit
 
@@ -62,37 +73,45 @@ Published energies per synaptic event:
 | SpiNNaker 2 | ≈ 10 pJ, up to 20 pJ | 22 nm FDSOI, 0.5 V, dynamic power, "equivalent" synaptic operations of a factorised connection | Höppner et al. 2021 |
 
 These are 100 to 900 times a 45 nm integer add, at newer nodes where an add is
-cheaper still. An event's cost is set by memory, routing and the neuron update,
-not by the width of what it carries. On Loihi a synaptic event is binary; on
+cheaper still. Absolute energies from different chips do not give the ratio
+between the two readings on any one of them; what they show is that an event's
+cost is dominated by memory, routing and the neuron update, not by the width
+of what it carries, so on chips that send each spike as an event (design (a))
+`ρ` is close to 1. On Loihi a synaptic event is binary; on
 TrueNorth one adds a 9-bit weight into a 20-bit membrane (Merolla et al.,
 supplement).
 
-Loihi 2 makes the comparison explicit. Its spikes can carry an integer payload,
-up to 32 bits and typically 8, which multiplies the downstream weights. Intel
-says this costs a "negligible extra energy" over binary spikes, without giving
-a figure (Loihi 2 technology brief, 2021). On that chip a 4-bit count can be
-sent as one graded spike (engine Z), or as `|q|` binary spikes (engine S) at
-about the same cost per event: `ρ ≈ 1`, and S costs `R` times Z (1.9 at rung 3,
-2.8 at rung 5).
+Loihi 2 points the same way. Its spikes can carry an integer payload, up to 32
+bits and typically 8, which multiplies the downstream weights. Intel says this
+costs a "negligible extra energy" over binary spikes, without giving a figure
+(Loihi 2 technology brief, 2021). On that chip a 4-bit count can be sent as one
+graded spike (engine Z) or as `|q|` binary spikes (engine S); if the per-event
+cost is about the same, S costs about `R` times Z (1.9 at rung 3, 2.8 at rung
+5). This is a qualitative indication from the vendor, not a measurement of
+SpikeBit.
 
 ## 4. Where this leaves the verdicts
 
-| hardware point | `ρ` | S against Z (`ρ*` 0.29–0.58) | S against D, sparse sites (`ρ*` 3.3, 15) | S against D, input sites (`ρ*` 0.33–0.47) |
+| cost model | `ρ` (or `ρ_eff`) | S against Z (`ρ*` 0.29–0.58) | S against D, sparse sites (`ρ*` 3.3, 15) | S against D, input sites (`ρ*` 0.33–0.47) |
 |---|---|---|---|---|
-| operand-width pricing, no fetch (DEC-19's bound) | 1/4 | cheaper | cheaper | cheaper |
-| adds priced by width (Horowitz) | 1 | dearer | cheaper | dearer |
-| adds plus weight fetch from 8 KB SRAM | 0.82–0.93 (operand-width adds), 1 (width-priced adds) | dearer | cheaper | dearer |
-| event-driven chips, Loihi 2 graded spikes | ≈ 1 | dearer | cheaper | dearer |
-| per-event model of Davidson & Furber (SpiNNaker 2, 22 nm) | ≈ 1 | dearer | cheaper | dearer |
+| adder only, priced by operand width (DEC-19's bound) | 1/4 | cheaper | cheaper | cheaper |
+| adder only, priced by width (Horowitz) | 1 | dearer | cheaper | dearer |
+| (a) event per spike, weight read from 8 KB SRAM per event | 0.82–1 | dearer | cheaper | dearer |
+| (a) per-event model of Davidson & Furber (SpiNNaker 2 figures) | ≈ 1 | dearer | cheaper | dearer |
+| (a) event-driven chips; Loihi 2 graded spikes (qualitative) | ≈ 1 | dearer | cheaper | dearer |
+| (b) weight held across a source's spikes | = adder `ρ` | open: as one of the first two rows | cheaper | open |
 
 The bands of DEC-24 stay as measured ("depends on hardware" against Z at every
-site). Every hardware point this note could source sits at `ρ ≥ 0.82`, above
-every site's `ρ*` against Z and above `ρ*` against D at the dense input sites.
-The only point where spikes win against Z is the operand-width assumption with
-no weight fetch, which no published figure supports. Against an engine that
-does not skip zeros, spikes win at the two sparse sites under every point; a
-zero-skipping integer engine is cheaper still there, by `R` (1.7–2.2) at
-`ρ = 1`.
+site). Under every design (a) cost model this note could price, spikes cost
+more than a zero-skipping integer engine at every site. Under design (b) the
+weight read drops out and the verdict is the adder question alone: spikes win
+against Z only if a ±1 increment of the 14–17-bit accumulator costs under
+`1/R` (0.29 to 0.58) of adding a 4-bit operand into it. Horowitz prices
+additions by width (no); pricing them by operand width (yes) is an assumption,
+and no measurement here settles it. These are cost models, not a bound on all
+digital hardware. Against an engine that does not skip zeros, spikes win at the
+two sparse sites under every model; a zero-skipping integer engine is cheaper
+still there, by `R` (1.7–2.2), whenever `ρ = 1`.
 
 ## 5. The whole model
 
@@ -152,6 +171,9 @@ Neither compares with a ternary integer engine that skips zeros, the baseline
 of this project.
 
 ## Not established
+
+  * The cost of a ±1 increment against a 4-bit addition into the same
+    accumulator: the whole verdict for design (b) rests on it.
 
   * No Loihi 2 energy per operation was found in Intel's documents; its graded
     spikes' cost is Intel's qualitative statement.

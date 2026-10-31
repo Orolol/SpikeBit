@@ -44,6 +44,30 @@ readings of `q` and of `Δq` give the consumer's integer outputs exactly; the
 unit test `test_delta_spike_reading_is_exact_through_a_ternary_bitlinear`
 covers random counts including the largest swing.
 
+## End-to-end exactness (added 2026-10-31, after review)
+
+The checks above are on integer sums. `scripts/spike_logits_check.py` (CPU,
+float32, first 32 windows of the eval tail, `runs/accounting/logits_check_*.json`)
+runs rung 5 three ways: the float graph as trained; an integer engine (each of
+the 84 spike-native consumers accumulates `W q` per weight group in integers,
+then applies `s · α_g` once); and a spike engine (the same, with the integer
+accumulations taken over the ±1 / {0, 1} spikes of `q` step by step and summed
+before the same scaling).
+
+| | seed 0 | seed 1 |
+|---|---|---|
+| spike engine vs integer engine | bit-identical logits | bit-identical logits |
+| integer engine vs float graph: CE | 1.4012 vs 1.4008 | 1.3961 vs 1.3967 |
+| same: argmax agreement | 99.0 % | 98.4 % |
+| same: mean / max abs logit difference | 0.10 / 5.7 | 0.11 / 5.3 |
+
+So the exactness claim has three levels: integer accumulations equal bit for
+bit (above, and unit tests); the spike engine equal to the integer engine bit
+for bit on the whole model; and both equal to the float training graph only up
+to float rounding, which a downstream LIF can turn into a different count (CE
+within 0.05 %, 1–2 % of argmaxes differ). The accounting compares the first
+two.
+
 ## Result
 
   * **Against an integer engine that skips zero activations (Z), the spike

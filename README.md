@@ -60,8 +60,10 @@ Since 2026-10-30 the project measures what the spike reading costs against
 integer engines running the same network (DECISIONS #24,
 `results/spike_accounting.md`, `results/hardware_cost_note.md`). Against an
 integer engine that skips zero activations, spikes need 1.7–3.4 × the
-accumulations at every site, and every sourced hardware figure prices a spike
-accumulation too high for them to win; against one that does not skip zeros
+accumulations at every site; on event-driven designs that read a weight per
+spike, every cost model we could source makes them dearer, and on designs that
+hold the weight across a source's spikes it comes down to the cost of a ±1
+increment, which no figure settles. Against an engine that does not skip zeros
 they win only at the two sparse sites. Coding the change between tokens saves
 nothing. Retrained and counted on WikiText-103, every site keeps its verdict,
 but rung 5 reaches only 71.8 % of rung 1 there (35.41 vs 25.44).
