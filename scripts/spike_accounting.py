@@ -24,7 +24,8 @@ outputs exactly.
 
 Checkpoints under ``checkpoints/ladder/<run>/final.pt``; results in
 ``runs/accounting/<run>.json``. ``N_WIN`` (environment) shortens the pass for a
-smoke test; the ``R`` check then does not apply.
+smoke test; the ``R`` check then does not apply. ``CORPUS=wikitext103`` reads the eval
+tail of WikiText-103 instead of TinyStories (DEC-24 tier 3).
 """
 import json, os, sys, time
 import torch
@@ -34,12 +35,13 @@ from spiking_ternary_lm.model.model import SpikingTernaryRWKV
 from spiking_ternary_lm.neurons.binary_lif import decompose_integer_to_binary, decompose_signed_to_spikes
 from spiking_ternary_lm.neurons.fai_lif import FAILIF
 from spiking_ternary_lm.quantization.bitlinear import BitLinear
-from spiking_ternary_lm.training.data import tokenize_tinystories
+from spiking_ternary_lm.training.data import load_corpus
 
 torch.set_grad_enabled(False)
 dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 SEQ, B = 128, 16
 N_WIN = int(os.environ.get("N_WIN", 256))
+CORPUS = os.environ.get("CORPUS", "tinystories")  # wikitext103 for DEC-24 tier 3
 SITES = ["time_mix.lif_k", "time_mix.lif_v", "time_mix.lif_out", "channel_mix.lif_k", "channel_mix.lif_v"]
 CONSUMER = {"time_mix.lif_out": "time_mix.W_o", "channel_mix.lif_k": "channel_mix.W_v"}
 INPUT_CONSUMER = {"time_mix.lif_xr": "time_mix.W_r", "time_mix.lif_xk": "time_mix.W_k",
@@ -108,7 +110,7 @@ def fp_work_per_token(m, cfg, consumer_ids):
             "lm_head_fp_macs": m.lm_head.in_features * m.lm_head.out_features}
 
 
-ids = torch.from_numpy(protocol_eval_corpus(tokenize_tinystories(tokenizer_id="RWKV/rwkv-4-169m-pile")).ids.astype("int64"))
+ids = torch.from_numpy(protocol_eval_corpus(load_corpus(CORPUS)).ids.astype("int64"))
 windows = torch.stack([ids[w * SEQ:(w + 1) * SEQ] for w in range(N_WIN)])
 os.makedirs("runs/accounting", exist_ok=True)
 
@@ -176,7 +178,7 @@ for run in sys.argv[1:]:
                             "Z/D": r["Z"] / r["D"], "dZ/D": r["dZ"] / r["D"]}
         return rec
 
-    out = {"run": run, "act_quant": cfg.get("act_quant"), "bits": cfg.get("bits"), "windows": N_WIN,
+    out = {"run": run, "corpus": CORPUS, "act_quant": cfg.get("act_quant"), "bits": cfg.get("bits"), "windows": N_WIN,
            "seq": SEQ, "device": dev.type, "exact_on_real_counts": exact, "sites": {}, "per_block": {}}
     for site in sites:
         pooled = sum(acc[(i, site)] for i in range(L))
@@ -189,7 +191,7 @@ for run in sys.argv[1:]:
     out["pooled_spike_native"] = summarize(sn)
     R = out["pooled_spike_native"]["rho_star"]["S_vs_Z"] ** -1
     out["R_pooled"] = R
-    if N_WIN == 256 and run in R_4A:
+    if N_WIN == 256 and CORPUS == "tinystories" and run in R_4A:
         out["reproduces_4a"] = abs(R - R_4A[run]) <= 5e-4
         if not out["reproduces_4a"]:
             raise SystemExit(f"{run}: R pooled {R:.4f} does not reproduce the 4a value {R_4A[run]}")

@@ -96,6 +96,82 @@ def tokenize_tinystories(
     return TokenizedCorpus(ids=flat, vocab_size=vocab_size, eos_token_id=eos)
 
 
+# General-text corpus of DECISIONS #24 tier 3.
+WIKITEXT103 = ("Salesforce/wikitext", "wikitext-103-raw-v1")
+
+
+def _is_wikitext_title(line: str) -> bool:
+    """A WikiText article starts with a level-1 heading row, `` = Title = ``."""
+    s = line.strip()
+    return s.startswith("= ") and s.endswith(" =") and not s.startswith("= =")
+
+
+def wikitext_articles(lines: list[str]) -> list[str]:
+    """Join WikiText rows (one per line, newline kept) into articles."""
+    articles: list[list[str]] = []
+    for line in lines:
+        if not articles or _is_wikitext_title(line):
+            articles.append([])
+        articles[-1].append(line)
+    return ["".join(a) for a in articles]
+
+
+def tokenize_wikitext103(
+    tokenizer_id: str = "RWKV/rwkv-4-169m-pile",
+    cache_path: str | Path = "./data/wikitext103_packed.npz",
+    split: str = "train",
+) -> TokenizedCorpus:
+    """Tokenize a WikiText-103 (raw) split, one EOS after each article, cached like
+    :func:`tokenize_tinystories`."""
+    cache_path = Path(cache_path)
+    final_cache = cache_path.with_name(f"{cache_path.stem}_{tokenizer_id.replace('/', '_')}_{split}.npz")
+    if final_cache.exists():
+        npz = np.load(final_cache, allow_pickle=False)
+        return TokenizedCorpus(
+            ids=npz["ids"], vocab_size=int(npz["vocab_size"][0]), eos_token_id=int(npz["eos"][0])
+        )
+
+    from datasets import load_dataset
+
+    articles = wikitext_articles(load_dataset(*WIKITEXT103, split=split)["text"])
+    tok = _make_tokenizer(tokenizer_id)
+    vocab_size = tok.vocab_size
+    eos = tok.eos_token_id if tok.eos_token_id is not None else 0
+    chunks: list[np.ndarray] = []
+    BATCH = 256
+    for i in range(0, len(articles), BATCH):
+        for ids in tok(articles[i : i + BATCH], add_special_tokens=False)["input_ids"]:
+            chunks.append(np.asarray(ids, dtype=np.int32))
+            chunks.append(np.asarray([eos], dtype=np.int32))
+    flat = np.concatenate(chunks)
+    if vocab_size < 2**16:
+        flat = flat.astype(np.uint16)
+
+    final_cache.parent.mkdir(parents=True, exist_ok=True)
+    np.savez(
+        final_cache,
+        ids=flat,
+        vocab_size=np.array([vocab_size], dtype=np.int32),
+        eos=np.array([eos], dtype=np.int32),
+    )
+    return TokenizedCorpus(ids=flat, vocab_size=vocab_size, eos_token_id=eos)
+
+
+def load_corpus(
+    dataset: str = "tinystories",
+    tokenizer_id: str = "RWKV/rwkv-4-169m-pile",
+    max_examples: int | None = None,
+) -> TokenizedCorpus:
+    """The packed training corpus by name: ``tinystories`` (default) or ``wikitext103``."""
+    if dataset == "tinystories":
+        return tokenize_tinystories(tokenizer_id=tokenizer_id, max_examples=max_examples)
+    if dataset == "wikitext103":
+        if max_examples is not None:
+            raise ValueError("max_examples is only supported for tinystories")
+        return tokenize_wikitext103(tokenizer_id=tokenizer_id)
+    raise ValueError(f"unknown dataset {dataset!r}")
+
+
 class PackedTokenDataset(IterableDataset):
     """Stream fixed-length token windows from a packed corpus.
 

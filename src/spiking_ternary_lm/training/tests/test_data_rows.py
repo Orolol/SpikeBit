@@ -2,7 +2,7 @@
 import numpy as np
 import torch
 
-from spiking_ternary_lm.training.data import PackedTokenDataset, TokenizedCorpus
+from spiking_ternary_lm.training.data import PackedTokenDataset, TokenizedCorpus, wikitext_articles
 
 
 def _corpus(n=1000):
@@ -28,3 +28,10 @@ def test_default_order_is_sequential_across_the_batch():
     ds = PackedTokenDataset(_corpus(), seq_len=T)
     x, _ = next(iter(torch.utils.data.DataLoader(ds, batch_size=B)))
     assert torch.equal(x[:, 0], torch.arange(0, B * T, T))
+
+
+def test_wikitext_articles_split_on_level1_headings():
+    """DECISIONS #24 tier 3: a `` = Title = `` row starts an article; `` = = Sub = = `` does not."""
+    rows = [" = A = \n", "", " text a \n", " = = Sub = = \n", " more a \n", " = B = \n", " text b \n"]
+    assert wikitext_articles(rows) == [" = A = \n text a \n = = Sub = = \n more a \n",
+                                       " = B = \n text b \n"]

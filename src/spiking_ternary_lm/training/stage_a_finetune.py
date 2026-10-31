@@ -40,7 +40,7 @@ from spiking_ternary_lm.model.config import SpikingTernaryRWKVConfig
 from spiking_ternary_lm.model.model import SpikingTernaryRWKV
 from spiking_ternary_lm.neurons.fai_lif import FAILIF, calibrate_observers
 from spiking_ternary_lm.quantization.bitlinear import BitLinear, set_quant_mix
-from spiking_ternary_lm.training.data import build_train_eval_loaders, tokenize_tinystories
+from spiking_ternary_lm.training.data import build_train_eval_loaders, load_corpus
 from spiking_ternary_lm.training.schedules import linear_warmup_cosine
 from spiking_ternary_lm.utils.logging import JsonlMetricsWriter, get_logger
 
@@ -58,6 +58,7 @@ class StageAArgs:
     batch_size: int = 8
     grad_accum: int = 4  # effective batch 32
     max_examples: int | None = None  # None = full TinyStories
+    dataset: str = "tinystories"  # or "wikitext103" (DECISIONS #24 tier 3)
     eval_fraction: float = 0.01
     # Training
     total_steps: int = 10000
@@ -369,9 +370,9 @@ def train(args: StageAArgs) -> int:
         del dckpt
 
     # --- Data --------------------------------------------------------
-    LOG.info("tokenizing TinyStories (cached after first run)...")
-    corpus = tokenize_tinystories(
-        tokenizer_id=args.tokenizer_id, max_examples=args.max_examples
+    LOG.info("tokenizing %s (cached after first run)...", args.dataset)
+    corpus = load_corpus(
+        args.dataset, tokenizer_id=args.tokenizer_id, max_examples=args.max_examples
     )
     LOG.info("corpus tokens: %.2f M", len(corpus.ids) / 1e6)
     train_loader, eval_loader = build_train_eval_loaders(
