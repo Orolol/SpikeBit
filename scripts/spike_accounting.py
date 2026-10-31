@@ -26,9 +26,16 @@ Checkpoints under ``checkpoints/ladder/<run>/final.pt``; results in
 ``runs/accounting/<run>.json``. ``N_WIN`` (environment) shortens the pass for a
 smoke test; the ``R`` check then does not apply. ``CORPUS=wikitext103`` reads the eval
 tail of WikiText-103 instead of TinyStories (DEC-24 tier 3).
+
+By default the counts are the float graph's trace (each BitLinear a float matmul on
+``s * q``). ``ENGINE=integer`` runs every spike-native consumer as the integer engine of
+``spiking_ternary_lm.eval.integer_engine`` (per-group integer sums, then the scales), so the
+counts are the trace of the engine being priced; results then go to
+``runs/accounting/integer/<run>.json``, with the largest |per-group integer sum| seen.
 """
 import json, os, sys, time
 import torch
+from spiking_ternary_lm.eval import integer_engine
 from spiking_ternary_lm.eval.perplexity import protocol_eval_corpus
 from spiking_ternary_lm.model.config import SpikingTernaryRWKVConfig
 from spiking_ternary_lm.model.model import SpikingTernaryRWKV
@@ -42,6 +49,9 @@ dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 SEQ, B = 128, 16
 N_WIN = int(os.environ.get("N_WIN", 256))
 CORPUS = os.environ.get("CORPUS", "tinystories")  # wikitext103 for DEC-24 tier 3
+ENGINE = os.environ.get("ENGINE", "float")  # integer: count the integer engine's own trace
+assert ENGINE in ("float", "integer"), ENGINE
+OUT_DIR = "runs/accounting" if ENGINE == "float" else "runs/accounting/integer"
 SITES = ["time_mix.lif_k", "time_mix.lif_v", "time_mix.lif_out", "channel_mix.lif_k", "channel_mix.lif_v"]
 CONSUMER = {"time_mix.lif_out": "time_mix.W_o", "channel_mix.lif_k": "channel_mix.W_v"}
 INPUT_CONSUMER = {"time_mix.lif_xr": "time_mix.W_r", "time_mix.lif_xk": "time_mix.W_k",
@@ -112,7 +122,7 @@ def fp_work_per_token(m, cfg, consumer_ids):
 
 ids = torch.from_numpy(protocol_eval_corpus(load_corpus(CORPUS)).ids.astype("int64"))
 windows = torch.stack([ids[w * SEQ:(w + 1) * SEQ] for w in range(N_WIN)])
-os.makedirs("runs/accounting", exist_ok=True)
+os.makedirs(OUT_DIR, exist_ok=True)
 
 for run in sys.argv[1:]:
     t0 = time.time()
@@ -133,6 +143,9 @@ for run in sys.argv[1:]:
             assert lif.act_quant == "lsq" and float(lif.lsq_zp.abs().max()) == 0.0, f"{run} {i} {site}: zp != 0"
             nnz_col[(i, site)] = (bl.pack_weights()[0] != 0).sum(0).to(torch.float64).to(dev)
             shape[site] = (bl.out_features, bl.in_features)
+    engine_stats = None
+    if ENGINE == "integer":
+        _, engine_stats = integer_engine.install(m, {cons: site for site, cons in consumer.items()})
     first = True
     for b0 in range(0, N_WIN, B):
         m.reset_state()
@@ -178,7 +191,7 @@ for run in sys.argv[1:]:
                             "Z/D": r["Z"] / r["D"], "dZ/D": r["dZ"] / r["D"]}
         return rec
 
-    out = {"run": run, "corpus": CORPUS, "act_quant": cfg.get("act_quant"), "bits": cfg.get("bits"), "windows": N_WIN,
+    out = {"run": run, "corpus": CORPUS, "engine": ENGINE, "act_quant": cfg.get("act_quant"), "bits": cfg.get("bits"), "windows": N_WIN,
            "seq": SEQ, "device": dev.type, "exact_on_real_counts": exact, "sites": {}, "per_block": {}}
     for site in sites:
         pooled = sum(acc[(i, site)] for i in range(L))
@@ -191,7 +204,10 @@ for run in sys.argv[1:]:
     out["pooled_spike_native"] = summarize(sn)
     R = out["pooled_spike_native"]["rho_star"]["S_vs_Z"] ** -1
     out["R_pooled"] = R
-    if N_WIN == 256 and CORPUS == "tinystories" and run in R_4A:
+    if engine_stats is not None:
+        out["integer_engine"] = {"max_abs_group_sum": engine_stats["max_acc"],
+                                 "max_input_err_vs_s_times_q": engine_stats["max_input_err"]}
+    if N_WIN == 256 and CORPUS == "tinystories" and ENGINE == "float" and run in R_4A:
         out["reproduces_4a"] = abs(R - R_4A[run]) <= 5e-4
         if not out["reproduces_4a"]:
             raise SystemExit(f"{run}: R pooled {R:.4f} does not reproduce the 4a value {R_4A[run]}")
@@ -246,7 +262,9 @@ for run in sys.argv[1:]:
           + ", ".join(f"{k} {v:.3f}" for k, v in sa["factors_spike_native"].items()))
     print(f"  FP work/token: {fp['ops_total'] / 1e6:.2f} M ops + {fp['special_total'] / 1e6:.3f} M special; "
           f"head {head / 1e6:.1f} M FP MACs; {out['seconds']:.0f} s")
-    with open(f"runs/accounting/{run}.json", "w") as f:
+    if engine_stats is not None:
+        print(f"  integer engine: largest |group sum| {engine_stats['max_acc']:.0f}")
+    with open(f"{OUT_DIR}/{run}.json", "w") as f:
         json.dump(out, f, indent=1)
     del m
     if dev.type == "cuda":

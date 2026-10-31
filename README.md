@@ -64,7 +64,7 @@ accumulations at every site; on event-driven designs that read a weight per
 spike, every cost model we could source makes them dearer, and on designs that
 hold the weight across a source's spikes it comes down to the cost of a ±1
 increment, which no figure settles. Against an engine that does not skip zeros
-they win only at the two sparse sites. Coding the change between tokens saves
+they need fewer accumulations only at the two sparse sites. Coding the change between tokens saves
 nothing. Retrained and counted on WikiText-103, every site keeps its verdict,
 but rung 5 reaches only 71.8 % of rung 1 there (35.41 vs 25.44).
 
@@ -107,8 +107,10 @@ Stage A ladder: `scripts/rung0_equivalence.py`, `scripts/ladder_summary.py`,
 `scripts/_beta_stats.py`; the
 runs themselves are `scripts/train_stage_a.py` commands, driven on Colab by
 `colab/ladder_*.py` (commands in `results/stage_a_ladder.md`).
-Spike accounting (DECISIONS #24): `scripts/spike_accounting.py`,
-`scripts/accounting_tables.py`.
+Spike accounting (DECISIONS #24): `scripts/spike_accounting.py` (`ENGINE=integer` for the
+integer engine's trace), `scripts/accounting_tables.py`, `scripts/accounting_engines.py`,
+`scripts/accounting_figure.py`, `scripts/spike_logits_check.py`; the arXiv note is
+`writeup/note.tex` (`bash writeup/make_arxiv.sh`).
 
 `data/`, `checkpoints/` and `runs/` are git-ignored (≈ 63 GB of
 checkpoints locally; `stage_a_init_phase35.pt` is the converted 4-bit

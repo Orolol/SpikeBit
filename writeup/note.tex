@@ -35,19 +35,20 @@ An Exact Accounting on a Ternary Language Model}
 \maketitle
 
 \begin{abstract}
-Spiking language models report large energy savings, usually by pricing a spike accumulation
-at 0.9\,pJ against 4.6\,pJ for a 32-bit floating-point multiply-accumulate. Several of them run
+Spiking language models report large energy savings, usually by pricing a spike accumulation at
+0.9\,pJ against 4.6\,pJ for a 32-bit floating-point multiply-accumulate. Several of them run
 integer activations as trains of unit spikes. We measure what that unrolling costs on a model
 where it is exact: RWKV-4-169M with ternary weights and 4-bit activations at every projection
 input, whose spike engine produces logits bit-identical to its integer engine. On the
 projections the usual formula credits spikes with 3.3\x{} less energy; this factors into removed
 multiplications (5.1\x) and skipped zeros (1.8\x), both available to an integer engine with
 ternary weights, times the cost of the unrolling (0.36). Counted directly, unit spikes need
-1.7--3.4 times the accumulations of a zero-skipping integer engine at every site, beat a dense
-engine only at the two sparse sites, and gain nothing from delta coding; the verdicts hold on
-TinyStories and WikiText-103. Under every event-driven cost model we could price, spikes cost
-more than the integer engine; where weights are held across a source's spikes, the answer
-reduces to the cost of a $\pm 1$ increment, which published figures do not settle.
+1.7--3.4 times the accumulations of a zero-skipping integer engine at every site, need fewer
+accumulations than a dense engine only at the two sparse sites, and gain nothing from delta
+coding; the verdicts hold on TinyStories and WikiText-103. Under every event-driven cost model
+we could price, spikes cost more than the integer engine; where weights are held across a
+source's spikes, the answer reduces to the cost of a $\pm 1$ increment, which published figures
+do not settle.
 \end{abstract}
 
 \section{Introduction}
@@ -184,7 +185,10 @@ Exactness holds at three levels, which we keep apart:
   rounding, which a downstream LIF can turn into a different count: cross-entropy within 0.05\%,
   98--99\% of argmaxes equal.
 \end{enumerate}
-The accounting compares levels 1--2: two engines computing the same function.
+The accounting compares levels 1--2: two engines computing the same function. The counts of
+Section~\ref{sec:counting} are taken on the floating-point graph's trace; recounted on the integer
+engine's own trace, where a downstream count can differ (level 3), every ratio quoted in this note
+changes by at most 0.0012 (0.01\% relative), and no displayed value or verdict changes.
 
 The change between consecutive tokens, $\Delta q_t = q_t - q_{t-1}$, lies in $[-15, 15]$ and is
 unrolled the same way on a signed 5-bit grid ($T = 16$). A consumer that keeps its previous
@@ -214,15 +218,19 @@ $\Delta$Z, $\Delta$S & Z, S on $\Delta q_t$ & 5-bit count, one spike \\
 \end{tabular}
 \end{table}
 
-\paragraph{Cost per accumulation.} Let $a$ be the cost of adding a 4-bit operand into the output
-accumulator and $\rho a$ that of a $\pm 1$ increment of the same accumulator. Counting additions
-only, the unit spikes are cheaper than engine X when
+\paragraph{Cost per accumulation.} Every engine accumulates per weight group, as the integer
+path of a BitLinear does: with 128 inputs per group, ternary weights and counts of magnitude at
+most 15 (including $\Delta q$), a group sum is at most $128 \times 15 = 1920$ in magnitude and
+fits a 12-bit signed accumulator (the largest we observe is 348). The group's scale is then
+applied once in floating point, the same in every engine, and is left out of the counts. Let $a$
+be the cost of adding a 4-bit operand into that accumulator and $\rho a$ that of a $\pm 1$
+increment of it. Counting additions only, the unit spikes are cheaper than engine X when
 $\rho < \rho^* = \mathrm{ops}_X/\mathrm{ops}_S$. Section~\ref{sec:cost} adds the cost $f$ of
-reading the weight. Two pricings bound $\rho$: both operands enter the same 14--17-bit adder and
-Horowitz's table prices additions by width, giving $\rho = 1$; priced by operand width instead,
-an assumption favourable to spikes, $\rho = 1/4$. The bands: $\rho^* > 1$, spikes cheaper at any
-$\rho$ in that range; $\rho^* < 1/4$, dearer at any; in between, the answer depends on the
-hardware.
+reading the weight. We examine two reference pricing assumptions for $\rho$, not physical bounds.
+Both operands enter the same 12-bit adder, and Horowitz's table prices additions by width:
+$\rho = 1$. Priced by operand width instead, an assumption favourable to spikes: $\rho = 1/4$.
+The bands: $\rho^* > 1$, unit spikes need fewer accumulations and are cheaper under both
+pricings; $\rho^* < 1/4$, dearer under both; in between, the verdict depends on the pricing.
 
 \paragraph{The sign is trivial, the size is not.} $|q_i| \geq \mathbf{1}[q_i \neq 0]$, so
 $R = S/Z \geq 1$ for any network, with equality when every non-zero count is $\pm 1$, as with
@@ -266,8 +274,8 @@ channel-mix input $x_r \to W_r$ & 82--84\% & 2.13--2.19 & 0.46--0.47 & 0.38--0.3
 \caption{Break-even cost ratio $\rho^*$ per spike-native site of the studied model on
 TinyStories, pooled over the 12 blocks (one marker per seed). Unit spikes are cheaper than an
 integer engine when a spike accumulation costs less than $\rho^*$ times a 4-bit accumulation.
-Shaded: the band $[1/4, 1]$ where the verdict depends on the hardware. Hatched: design (a) of
-Section~\ref{sec:cost}, $\rhoeff \geq 0.82$.}
+Shaded: between the two reference pricings, $\rho = 1/4$ and $\rho = 1$. Hatched: design (a)
+of Section~\ref{sec:cost}, $\rhoeff \geq 0.82$.}
 \label{fig:rho}
 \end{figure}
 
@@ -275,21 +283,25 @@ Section~\ref{sec:cost}, $\rhoeff \geq 0.82$.}
 \item \textbf{Against Z, unit spikes always need more accumulations:} $R$ = 1.7 to 3.1 per site
   (up to 3.4 at twice the training budget), 2.8 pooled. A $\pm 1$ increment would have to cost
   between 0.32 and 0.58 of a 4-bit addition.
-\item \textbf{Against D, the verdict follows sparsity.} At the two sparse sites spikes are
-  cheaper at any $\rho \leq 1$. At the five dense input sites, which carry 61.5\% of the
-  projection work, and pooled ($\rho^* = 0.65$), they are not. Z gets the sparse sites' benefit
-  without the unrolling.
+\item \textbf{Against D, the verdict follows sparsity.} At the two sparse sites unit spikes
+  need fewer accumulations ($\rho^*$ = 3.3 and 14--15), so they are cheaper under both
+  pricings. At the five dense input sites, which carry 61.5\% of the projection work, and pooled
+  ($\rho^* = 0.65$), they need more, and are cheaper only if a $\pm 1$ increment costs less than
+  $\rho^*$ (0.37--0.47 per site) of a 4-bit addition, as under operand-width pricing. Z gets the
+  sparse sites' benefit without the unrolling.
 \item \textbf{Delta coding saves nothing.} At the dense sites $\Delta q$ is non-zero as often as
   $q$; at the sparse sites more often, since a unit that turns on and off makes two changes. The
   bands are the same as without it, except one site of the model trained at twice the budget,
   which becomes ``dearer''.
 \end{itemize}
 
+\paragraph{Neuron sites only.} On TinyStories, the model with 4-bit counts only at the neuron
+sites (the WKV inputs, the two sparse sites and the channel-mix output), whose only spike-native
+sites are the two sparse ones, gives a pooled $\rho^*$ of 8.8--8.9 against D and 0.53 against Z.
+
 \paragraph{WikiText-103.} Retrained and counted the same way, no site changes band in any of
 the three comparisons: pooled $\rho^*$ 0.68--0.69 against D, 0.37--0.38 against Z
-($R$ = 2.66--2.69), 0.36 for $\Delta$S against $\Delta$Z. The model with 4-bit counts only at
-the neuron sites (the WKV inputs, the two sparse sites and the channel-mix output) gives a pooled
-$\rho^*$ of 8.8--8.9 against D and 0.53 against Z.
+($R$ = 2.66--2.69), 0.36 for $\Delta$S against $\Delta$Z.
 
 \paragraph{Sparser training.} The quantizers were not trained for sparsity. A firing-rate
 penalty would lower the counts: it can turn a 3 into a 1, which lowers S and leaves Z unchanged,
@@ -317,23 +329,26 @@ $5.11 \times 1.82 = 9.3\times$ ($13.7\times$ if it also skips weight zeros, whic
 does not count). The third is the unrolling's own contribution, and it is a cost. For one-step
 binary or ternary spikes the third factor is 1, and the whole saving is the first two.
 
-The constants are FP32 operations. An integer addition costs 0.03 to 0.1\,pJ in the same table
-(8 to 32 bits), a further 9--30\x{} that integer and spike engines could both claim. When the
-reference network is itself integer, charging its operations the FP32 MAC constant hands the
-spiking side the 5.1\x{} of the constants: SDLLM reports 6\x{} less energy than an INT4 model
-while performing 1.15\x{} fewer operations (our arithmetic from its Table~2).
+The constants are FP32 operations. The 12-bit integer additions of Section~\ref{sec:counting}
+lie between the 8- and 32-bit rows of the same table (0.03 and 0.1\,pJ), a further 9--30\x{}
+that integer and spike engines could both claim. When the reference network is itself integer,
+charging its operations the FP32 MAC constant hands the spiking side the 5.1\x{} of the
+constants: SDLLM reports 6\x{} less energy than an INT4 model while performing 1.15\x{} fewer
+operations (our arithmetic from its Table~2).
 
 \section{Cost models}
 \label{sec:cost}
 
 Whether the unrolling pays depends on what an accumulation costs besides the addition, above all
-on how often the weight is read. Two designs bracket it.
+on how often the weight is read. We consider two designs.
 
 \paragraph{(a) One event per spike, weight read per event.} This is how event-driven chips
 process spikes: each accumulation reads the weight it adds, at cost $f$. From the smallest SRAM in
 Horowitz's table (10\,pJ per 64-bit read), 32 packed ternary weights cost $f \approx 0.31$\,pJ
-each, 3 to 10 times an addition ($a$ = 0.03--0.1\,pJ). Unit spikes are cheaper than Z only if
-$\rhoeff = (\rho a + f)/(a + f) < 1/R$; here $\rhoeff$ is 0.82 to 0.93 even at $\rho = 1/4$.
+each, 3 to 10 times a 12-bit addition, which lies between the 8- and 32-bit rows ($a$ =
+0.03--0.1\,pJ; the upper end, the most favourable to spikes, overstates it). Unit spikes are
+cheaper than Z only if $\rhoeff = (\rho a + f)/(a + f) < 1/R$; here $\rhoeff$ is 0.82 to 0.93
+even at $\rho = 1/4$, about 0.91 if $a$ grows linearly with width from the 8-bit row.
 The per-event model of \citet{davidson2021}, from SpiNNaker~2 post-layout figures, reaches the
 same: with $E$ the cost of an addition, a weight read costs about $5E$, a spike event $7E$, a
 multiply-accumulate event $12E$; without the multiplication, which ternary weights remove, an
@@ -350,21 +365,22 @@ as one event per unit.
 \paragraph{(b) Weight held across a source's spikes.} If the engine reads the weight once and
 applies all $|q_i|$ unit spikes of input $i$ from a register, the read is paid once per non-zero
 input in both engines ($Zf + S\rho a$ against $Z(f + a)$) and drops out. Unit spikes are then
-cheaper than Z if and only if $\rho < 1/R$: a $\pm 1$ increment of the 14--17-bit accumulator
+cheaper than Z if and only if $\rho < 1/R$: a $\pm 1$ increment of the 12-bit group accumulator
 must cost less than 0.29 to 0.58 of adding a 4-bit operand into it. Horowitz prices additions by
 width ($\rho = 1$, no); pricing by operand width ($\rho = 1/4$, yes) is an assumption. We found
 no published figure that settles it.
 
 \begin{table}[t]
 \centering\footnotesize
-\caption{Verdict of unit spikes under each cost model: cheaper or dearer than the integer engine.}
+\caption{Verdict of unit spikes under each cost model: cheaper or dearer than the integer engine.
+The two reference pricings count additions only.}
 \label{tab:cost}
 \begin{tabular}{@{}llccc@{}}
 \toprule
 cost model & $\rho$ or $\rhoeff$ & vs Z & vs D, sparse sites & vs D, input sites \\
 \midrule
-additions only, priced by operand width & 1/4 & cheaper & cheaper & cheaper \\
-additions only, priced by width (Horowitz, 45\,nm) & 1 & dearer & cheaper & dearer \\
+operand-width pricing & 1/4 & cheaper & cheaper & cheaper \\
+adder-width pricing (Horowitz, 45\,nm) & 1 & dearer & cheaper & dearer \\
 (a) event per spike, weight read from SRAM & 0.82--1 & dearer & cheaper & dearer \\
 (a) per-event model, SpiNNaker~2 figures & $\approx 1$ & dearer & cheaper & dearer \\
 (b) weight held across a source's spikes & adder $\rho$ & open & cheaper & open \\
@@ -378,12 +394,12 @@ $\pm 1$ increment, which these figures leave open. These are cost models, not a 
 hardware.
 
 \paragraph{The whole model.} The projections are a small part of a token's energy. With the LM
-head in FP16 (58\,\textmu J per token at 1.5\,pJ per MAC), their additions cost 1.0--3.4\,\textmu J
-in Z and 2.9--9.6\,\textmu J in S at $\rho = 1$, so the reading moves a token's arithmetic by
-$-2\%$ to $+10\%$; under design (a) weight reads add 10.7\,\textmu J (Z) or 30\,\textmu J (S). If
-the 23\,MB of ternary weights come from DRAM at batch 1, moving them costs 7 to 125 times the
-arithmetic. These are orders of magnitude, not the cost model of a built engine. The spiking LMs
-cited above also keep a floating-point head.
+head in FP16 (58\,\textmu J per token at 1.5\,pJ per MAC), their additions cost
+1.0--3.4\,\textmu J in Z and 2.9--9.6\,\textmu J in S at $\rho = 1$ ($a$ = 0.03--0.1\,pJ), so
+the reading moves a token's arithmetic by $-2\%$ to $+10\%$; under design (a) weight reads add
+10.7\,\textmu J (Z) or 30\,\textmu J (S). If the 23\,MB of ternary weights come from DRAM at
+batch 1, moving them costs 7 to 125 times the arithmetic. These are orders of magnitude, not the
+cost model of a built engine. The spiking LMs cited above also keep a floating-point head.
 
 \section{Related work}
 \label{sec:related}
@@ -435,15 +451,15 @@ changes; here the changes are as dense as the values.
 
 When a quantized language model's integer activations are unrolled into unit spikes, the same
 network runs as an integer engine, and the comparison is about work rather than about models.
-Here the unrolling never needs fewer accumulations than an integer engine that skips zeros, wins
-against a dense engine only where activations are sparse, and gains nothing from delta coding,
-on two corpora. Under event-driven cost models that read a weight per spike it costs more; where
-weights are held across a source's spikes it can pay only if a $\pm 1$ increment costs well under
-a 4-bit addition, which we could not establish. The savings reported for such models come from
-removing multiplications and skipping zeros, which an integer engine with ternary weights also
-has, priced with FP32 constants. If unit spikes are used at all in such a model they belong at
-the sparse sites, and there an integer engine that skips zeros needs $R$ times fewer
-accumulations.
+Here the unrolling never needs fewer accumulations than an integer engine that skips zeros,
+needs fewer than a dense engine only where activations are sparse, and gains nothing from delta
+coding, on two corpora. Under event-driven cost models that read a weight per spike it costs
+more; where weights are held across a source's spikes it can pay only if a $\pm 1$ increment
+costs well under a 4-bit addition, which we could not establish. The savings reported for such
+models come from removing multiplications and skipping zeros, which an integer engine with
+ternary weights also has, priced with FP32 constants. Unless a $\pm 1$ increment costs well
+under a 4-bit addition, unit spikes can pay in such a model only at the sparse sites, and even
+there an integer engine that skips zeros needs $R$ times fewer accumulations.
 
 \appendix
 
@@ -472,7 +488,8 @@ at the neuron sites), rung 5 (studied model), rungs 4b and 4c (membrane).
 \item Training and perplexities: \nolinkurl{results/stage_a_ladder.md} (commands, commits,
   checkpoints); WikiText-103 runs: \nolinkurl{colab/ladder_general.py}.
 \item Counts: \nolinkurl{scripts/spike_accounting.py} on the checkpoints, with
-  \texttt{CORPUS=wikitext103} in the environment for WikiText-103; tables by
+  \texttt{CORPUS=wikitext103} in the environment for WikiText-103, and \texttt{ENGINE=integer}
+  for the integer engine's trace (compared by \nolinkurl{scripts/accounting_engines.py}); tables by
   \nolinkurl{scripts/accounting_tables.py}; Figure~\ref{fig:rho} by
   \nolinkurl{scripts/accounting_figure.py}.
 \item Exactness: unit tests in \nolinkurl{src/spiking_ternary_lm/neurons/tests/test_binary_lif.py}

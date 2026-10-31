@@ -68,6 +68,37 @@ to float rounding, which a downstream LIF can turn into a different count (CE
 within 0.05 %, 1–2 % of argmaxes differ). The accounting compares the first
 two.
 
+## Counts on the integer engine's trace (added 2026-10-31, second review)
+
+The counts in this file are the float graph's trace: `spike_accounting.py`
+runs the model as trained and reads each LIF's `q`. The engines priced here run
+the spike-native consumers in integers, and the float rounding of the graph can
+change a downstream count (level 3 above). `ENGINE=integer` reruns the counts
+with every spike-native consumer hooked to the integer engine
+(`spiking_ternary_lm.eval.integer_engine`, the one the logits check uses), so
+the counts are that engine's own trace (CPU, about 110 s per checkpoint,
+`runs/accounting/integer/<run>.json`):
+
+    CUDA_VISIBLE_DEVICES= ENGINE=integer uv run python scripts/spike_accounting.py \
+        rung5_a4_s0 rung5_a4_s1 rung5x2_a4_s0 rung5x2_a4_s1 rung3l_a4_s0 rung3l_a4_s1
+    CUDA_VISIBLE_DEVICES= ENGINE=integer CORPUS=wikitext103 uv run python \
+        scripts/spike_accounting.py wt103_rung5_a4_s0 wt103_rung5_a4_s1
+    uv run python scripts/accounting_engines.py <the eight runs>   # runs/accounting/integer/compare.txt
+
+| run | largest change of a quoted ratio | relative | bands changed | largest \|group sum\| |
+|---|---|---|---|---|
+| rung 5, s0 / s1 | 0.0007 / 0.0005 | 0.01 % | none | 348 / 326 |
+| rung 5 ×2, s0 / s1 | 0.0005 / 0.0007 | 0.01 % | none | 348 / 342 |
+| rung 3, s0 / s1 | 0.0007 / 0.0003 | < 0.01 % | none | 152 / 159 |
+| rung 5 WikiText-103, s0 / s1 | 0.0004 / 0.0012 | 0.01 % | none | 301 / 315 |
+
+The ratios compared are every `ρ*` (S/D, S/Z, ΔS/ΔZ) per spike-native site and
+pooled, `R`, `ΔZ/Z`, `P(q ≠ 0)`, `E|q|` and the SNN papers' factors. The largest
+change is at the relu² site against D (`ρ*` ≈ 14–15), the most sensitive
+ratio. No value as printed in the tables below or in the write-up changes. The
+largest per-group integer sum, 348, is far inside the 128 × 15 = 1920 that a
+12-bit signed accumulator holds (`results/hardware_cost_note.md`, section 1).
+
 ## Result
 
   * **Against an integer engine that skips zero activations (Z), the spike

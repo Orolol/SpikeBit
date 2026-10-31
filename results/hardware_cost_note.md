@@ -4,7 +4,8 @@
 the ±1 spike reading of a 4-bit count is cheaper than an integer engine running
 the same network: spikes win when a spike accumulation costs less than `ρ*`
 times a 4-bit one. DEC-24 point 3 fixed the bands with DEC-19's two pricings,
-`ρ ∈ [1/4, 1]`. This note places published hardware figures inside that range;
+`ρ = 1/4` and `ρ = 1`: reference assumptions, not physical bounds (wording
+revised 2026-10-31). This note places published hardware figures inside that range;
 it does not move the bands. All figures are from the sources listed at the end,
 read in the original documents; none is from memory.
 
@@ -14,13 +15,20 @@ Horowitz (ISSCC 2014, Fig. 1.1.9, 45 nm, 0.9 V, figures the author calls
 rough) prices an integer add at 0.03 pJ for 8 bits and 0.1 pJ for 32 bits; there
 are no 4-bit or 16-bit rows. An FP32 add is 0.9 pJ and an FP32 multiply 3.7 pJ.
 
-Both readings add into the same accumulator. For a 768-wide sum of 4-bit counts
-times ternary weights it needs 14 bits, 17 for the 3072-wide channel-mix `W_v`.
-Adding a ±1 spike is an increment of that register, adding a 4-bit count is an
-add of a 4-bit operand into it; both are 14–17-bit additions, between the 8- and
-32-bit rows. Priced by width as Horowitz prices them, `ρ = 1`. DEC-19's other
-bound, `ρ = 1/4`, prices an addition by its operand: it is an assumption about
-event-driven hardware, favourable to spikes, not a figure from this table.
+Both readings add into the same accumulator. A BitLinear's integer path
+accumulates per weight group of 128 inputs and applies the group's scale once,
+in floating point, afterwards (`BitLinear.forward_integer`,
+`spiking_ternary_lm.eval.integer_engine`); that last step is the same in every
+engine. A group sum of counts of magnitude at most 15 (8 at the signed sites,
+15 at the relu² site and for `Δq`) times ternary weights is at most
+128 × 15 = 1920 in magnitude: a 12-bit signed accumulator (revised 2026-10-31;
+the first version sized it for a sum over the full width, 14–17 bits, which is
+not the execution counted). Adding a ±1 spike is an increment of that register,
+adding a 4-bit count is an add of a 4-bit operand into it; both are 12-bit
+additions, between the 8- and 32-bit rows. Priced by width as Horowitz prices
+them, `ρ = 1`. The other reference pricing, `ρ = 1/4`, prices an addition by
+its operand: it is an assumption about event-driven hardware, favourable to
+spikes, not a figure from this table.
 
 ## 2. Each accumulation also fetches a weight
 
@@ -28,7 +36,8 @@ An engine that adds a count or a spike into the outputs of a column first reads
 that column's weights. Horowitz prices a 64-bit read of an 8 KB SRAM at 10 pJ
 (32 KB: 20 pJ, 1 MB: 100 pJ). With ternary weights packed at 2 bits, 32 weights
 per read, that is `f ≈ 0.31 pJ` per weight from the smallest memory in the
-table: 3–10 times the add (`a` = 0.03–0.1 pJ). Per non-zero weight it is
+table: 3–10 times the add (`a` = 0.03–0.1 pJ, the rows around a 12-bit add;
+the 32-bit end, the most favourable to spikes, overstates it). Per non-zero weight it is
 0.46 pJ when the zeros are stored (1 in 1.47 weights is non-zero); the table
 below uses 0.31 pJ, the value most favourable to spikes.
 
@@ -49,6 +58,7 @@ For design (a):
 | `a` (add) | `f` (fetch, 8 KB SRAM) | `ρ_eff` at `ρ = 1/4` | at `ρ = 1` |
 |---|---|---|---|
 | 0.03 pJ (8-bit row) | 0.31 pJ | 0.93 | 1 |
+| 0.045 pJ (8-bit row scaled to 12 bits) | 0.31 pJ | 0.91 | 1 |
 | 0.1 pJ (32-bit row) | 0.31 pJ | 0.82 | 1 |
 
 A larger memory raises `f` and pushes `ρ_eff` closer to 1. For design (b) these
@@ -94,8 +104,8 @@ SpikeBit.
 
 | cost model | `ρ` (or `ρ_eff`) | S against Z (`ρ*` 0.29–0.58) | S against D, sparse sites (`ρ*` 3.3, 15) | S against D, input sites (`ρ*` 0.33–0.47) |
 |---|---|---|---|---|
-| adder only, priced by operand width (DEC-19's bound) | 1/4 | cheaper | cheaper | cheaper |
-| adder only, priced by width (Horowitz) | 1 | dearer | cheaper | dearer |
+| adder only, operand-width pricing (reference) | 1/4 | cheaper | cheaper | cheaper |
+| adder only, adder-width pricing (Horowitz) | 1 | dearer | cheaper | dearer |
 | (a) event per spike, weight read from 8 KB SRAM per event | 0.82–1 | dearer | cheaper | dearer |
 | (a) per-event model of Davidson & Furber (SpiNNaker 2 figures) | ≈ 1 | dearer | cheaper | dearer |
 | (a) event-driven chips; Loihi 2 graded spikes (qualitative) | ≈ 1 | dearer | cheaper | dearer |
@@ -105,13 +115,15 @@ The bands of DEC-24 stay as measured ("depends on hardware" against Z at every
 site). Under every design (a) cost model this note could price, spikes cost
 more than a zero-skipping integer engine at every site. Under design (b) the
 weight read drops out and the verdict is the adder question alone: spikes win
-against Z only if a ±1 increment of the 14–17-bit accumulator costs under
+against Z only if a ±1 increment of the 12-bit group accumulator costs under
 `1/R` (0.29 to 0.58) of adding a 4-bit operand into it. Horowitz prices
 additions by width (no); pricing them by operand width (yes) is an assumption,
 and no measurement here settles it. These are cost models, not a bound on all
-digital hardware. Against an engine that does not skip zeros, spikes win at the
-two sparse sites under every model; a zero-skipping integer engine is cheaper
-still there, by `R` (1.7–2.2), whenever `ρ = 1`.
+digital hardware. Against an engine that does not skip zeros, spikes need fewer
+accumulations only at the two sparse sites, and win there under every model,
+though a zero-skipping integer engine is cheaper still there, by `R` (1.7–2.2),
+whenever `ρ = 1`. At the input sites they win against D only if `ρ` is under
+0.33–0.47, as with operand-width pricing.
 
 ## 5. The whole model
 
@@ -177,8 +189,9 @@ of this project.
 
   * No Loihi 2 energy per operation was found in Intel's documents; its graded
     spikes' cost is Intel's qualitative statement.
-  * Horowitz has no 4- or 16-bit integer add; `a` is bracketed by the 8- and
-    32-bit rows. All Horowitz figures are 45 nm.
+  * Horowitz has no 4-, 12- or 16-bit integer add; `a` for the 12-bit group
+    accumulator is bracketed by the 8- and 32-bit rows. All Horowitz figures
+    are 45 nm.
   * DEC-1 cites NSLLM as Yao et al.; PubMed Central and Crossref list 20
     authors, first Han Xu, Man Yao 13th. Cited here as Xu et al.
   * The chip figures are per synaptic event at specific operating points and
