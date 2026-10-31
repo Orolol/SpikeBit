@@ -1,8 +1,8 @@
 # Write-up plan (DECISIONS #24, after tiers 1 and 2)
 
-Status 2026-10-31: plan only, no draft yet. Format (arXiv note, full paper or
-blog post) to be decided; section 6 lists what each one needs. Every number
-below is in `results/` with its command and commit.
+Status 2026-10-31: plan only, no draft yet. Format chosen by Gaétan on
+2026-10-31: an arXiv note of workshop length (section 6). Every number below
+is in `results/` with its command and commit.
 
 ## 1. Thesis
 
@@ -83,8 +83,10 @@ About 7 pages plus appendix (per-site tables, protocol, reproduction).
     integer, spikes), with what each counts.
   * **Fig. 2** (main figure): `ρ*` per site on a log axis, one marker per
     model and seed, against D, Z and ΔZ, with the bands [1/4, 1] shaded and
-    the hardware points of the note drawn as horizontal lines. Data:
-    `runs/accounting/*.json`; script to write (`scripts/accounting_figure.py`).
+    the hardware points of the note drawn as a hatched band. Done for rung 5:
+    `writeup/figures/rho_star.pdf`, from `uv run --with matplotlib==3.10.7
+    python scripts/accounting_figure.py` (rung 3 and rung 5 ×2 stay in the
+    appendix tables).
   * **Fig. 3**: β histograms, rung 4b against rung 4c.
   * **Table 1**: the ladder (quality).
   * **Table 2**: pooled counts per model (from `scripts/accounting_tables.py`).
