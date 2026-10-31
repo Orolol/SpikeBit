@@ -189,9 +189,8 @@ Eleven days is tight but the measurements exist; tier 3 finishes today.
      WikiText-103; rung 5 reaches 71.8 % of rung 1 there.
   3. ~~Venue~~: arXiv first, chosen 2026-10-31 (not NICE 2027); an ICLR 2027
      workshop to consider once the list is out (29 Nov 2026).
-  4. Whether the repository becomes public, and when (expected for any venue).
-  5. Authors, affiliations and contact e-mail: placeholders in `writeup/note.tex`, as is the
-     repository URL of Appendix B.
+  4. ~~Public repository~~: made public 2026-10-31 (https://github.com/Orolol/SpikeBit).
+  5. Author: Gaétan Martin (2026-10-31). Affiliation and contact e-mail still open.
   6. arXiv categories, proposed: cs.NE primary, cross-lists cs.LG and cs.AR. A first submission
      to a category may need an arXiv endorsement.
 
