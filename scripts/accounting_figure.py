@@ -4,8 +4,8 @@ From ``runs/accounting/rung5_a4_s{0,1}.json`` (spike_accounting.py). One row per
 spike-native site plus the pooled row; for each baseline (S vs D, S vs Z, dS vs dZ)
 one marker per seed. Spikes are cheaper than the baseline when a spike accumulation
 costs less than rho* times a 4-bit one. Shaded: DEC-24's "depends on hardware"
-band [1/4, 1]; hatched: the hardware points of results/hardware_cost_note.md
-(rho >= 0.82).
+band [1/4, 1]; hatched: design (a) of results/hardware_cost_note.md, one event per
+spike with a weight read per event (rho_eff >= 0.82).
 
     uv run --with matplotlib==3.10.7 python scripts/accounting_figure.py
 
@@ -69,7 +69,7 @@ for side in ("left", "bottom"):
 ax.tick_params(color="#a3a29c", length=3)
 top = n - 0.45
 ax.text(0.47, top, "depends on hardware", fontsize=7, color=MUTED, va="bottom", ha="center")
-ax.text(0.905, (n - 1) / 2, "sourced hardware, ρ ≥ 0.82", fontsize=7, color=MUTED, va="center",
+ax.text(0.905, (n - 1) / 2 + 0.3, "design (a): event per spike, $\\rho_{\\mathrm{eff}} \\geq 0.82$", fontsize=7, color=MUTED, va="center",
         ha="center", rotation=90, bbox=dict(facecolor="white", edgecolor="none", pad=1.5), zorder=2)
 ax.text(4.5, top, "spikes cheaper for any ρ ≤ 1", fontsize=7, color=MUTED, va="bottom", ha="center")
 handles = [plt.Line2D([], [], ls="none", marker=m, ms=6, mfc=c, mec="white", mew=0.8, label=lab)

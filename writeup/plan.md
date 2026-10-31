@@ -1,6 +1,6 @@
 # Write-up plan (DECISIONS #24, after tiers 1 and 2)
 
-Status 2026-10-31: plan only, no draft yet. Format chosen by Gaétan on
+Status 2026-10-31: draft in `writeup/note.md` (revision 3); this plan is kept for the claims table. Format chosen by Gaétan on
 2026-10-31: an arXiv note of workshop length (section 6). Every number below
 is in `results/` with its command and commit.
 
@@ -44,7 +44,7 @@ leak fixed or learned, did not improve the model.
 | C4 | Against a dense integer engine, spikes win only where activations are sparse: `ρ*` ≈ 3.3 and 15 at the two sparse sites, 0.33–0.47 at the input sites, 0.65 pooled at rung 5 | same | measured |
 | C5 | Delta coding between tokens saves nothing: `ΔZ/Z` 0.97–1.01 at dense sites, 1.24–1.58 at sparse ones | same | measured |
 | C6 | The SNN papers' 3.3 × on rung 5 = 5.11 (multiplications removed) × 1.82 (zeros skipped) × 0.36 (spike count); a zero-skipping integer engine gets 9.3 × with the same constants | same, decomposition table | measured; constants sourced |
-| C7 | Real hardware prices a spike accumulation at `ρ ≥ 0.82` of an integer one: adds priced by accumulator width, weight fetch, per-event energies of Loihi, TrueNorth and SpiNNaker 2, Loihi 2 graded spikes | `results/hardware_cost_note.md` | sourced; no measurement of ours |
+| C7 | Under event-driven cost models that read a weight per spike (design (a)), unit spikes cost more than Z at every site (`ρ_eff ≥ 0.82`); with the weight held across a source's spikes (design (b)) the verdict is the cost of a ±1 increment, open | `results/hardware_cost_note.md` (revised 2026-10-31) | cost models from sourced figures; no measurement of ours |
 | C8 | A membrane brings no gain at this scale, leak fixed (4b, 5.543) or learned (4c, 5.523); β = 0 at eval does not hurt | `results/stage_a_ladder.md` | measured, 2 seeds each |
 | C9 | Design lesson: if spikes at all, only at sparse sites (relu² output, time-mix output), and a zero-skipping integer engine still wins there by `R` (1.7–2.2) | C3, C4 | follows from C3–C4 |
 
