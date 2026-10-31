@@ -1,6 +1,7 @@
 # Write-up plan (DECISIONS #24, after tiers 1 and 2)
 
-Status 2026-10-31: draft in `writeup/note.md` (revision 3); this plan is kept for the claims table. Format chosen by Gaétan on
+Status 2026-10-31: LaTeX source in `writeup/note.tex` (revision 3, converted from `writeup/note.md`); build and
+arXiv tarball by `bash writeup/make_arxiv.sh` (tectonic); this plan is kept for the claims table. Format chosen by Gaétan on
 2026-10-31: an arXiv note of workshop length (section 6). Every number below
 is in `results/` with its command and commit.
 
@@ -189,3 +190,17 @@ Eleven days is tight but the measurements exist; tier 3 finishes today.
   3. ~~Venue~~: arXiv first, chosen 2026-10-31 (not NICE 2027); an ICLR 2027
      workshop to consider once the list is out (29 Nov 2026).
   4. Whether the repository becomes public, and when (expected for any venue).
+  5. Authors, affiliations and contact e-mail: placeholders in `writeup/note.tex`, as is the
+     repository URL of Appendix B.
+  6. arXiv categories, proposed: cs.NE primary, cross-lists cs.LG and cs.AR. A first submission
+     to a category may need an arXiv endorsement.
+
+## 11. arXiv submission
+
+  * `bash writeup/make_arxiv.sh` writes `writeup/build/note.pdf` and
+    `writeup/build/arxiv.tar.gz` (`note.tex`, `note.bbl`, `figures/rho_star.pdf`). arXiv
+    compiles with pdflatex and does not run BibTeX, hence the `.bbl` and an ASCII-only source;
+    the local build uses XeTeX (tectonic 0.17.0), so the pdflatex build is first checked by
+    arXiv's own preview.
+  * Abstract for the submission form (plain text, 1188 characters, limit 1920):
+    `writeup/arxiv_abstract.txt`.

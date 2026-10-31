@@ -1,6 +1,7 @@
 <!--
-Draft of the arXiv note (DECISIONS #24; plan in writeup/plan.md). Markdown with
-LaTeX math, to convert once a TeX toolchain is chosen. Every number is in
+Superseded by writeup/note.tex (2026-10-31), the LaTeX source of the arXiv note; this
+file is revision 3 as Gaétan reviewed it and is no longer updated.
+Draft of the arXiv note (DECISIONS #24; plan in writeup/plan.md). Every number is in
 results/ with its command and commit.
 Revision 3 (2026-10-31) applies Gaétan's review: cost models instead of a
 hardware bound, design (a) / (b), the firing-rate argument corrected, scope

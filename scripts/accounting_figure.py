@@ -1,4 +1,4 @@
-"""Figure 2 of the write-up (DECISIONS #24): break-even cost ratio rho* per site, rung 5.
+"""Figure 1 of the write-up (DECISIONS #24): break-even cost ratio rho* per site, rung 5.
 
 From ``runs/accounting/rung5_a4_s{0,1}.json`` (spike_accounting.py). One row per
 spike-native site plus the pooled row; for each baseline (S vs D, S vs Z, dS vs dZ)
@@ -34,11 +34,11 @@ BASELINES = [("S_vs_D", "vs dense integer (D)", "#2a78d6", "o"),
 INK, MUTED, GRID = "#0b0b0b", "#52514e", "#e4e3df"
 
 recs = [json.load(open(f"runs/accounting/{RUN}_s{s}.json")) for s in (0, 1)]
-rows = [(label + f"  ({100 * recs[0]['sites'][key]['P_nonzero']:.0f} % non-zero)",
+rows = [(label + f"  ({100 * recs[0]['sites'][key]['P_nonzero']:.0f}% non-zero)",
          [r["sites"][key] for r in recs]) for key, label in SITES]
-rows.append(("pooled, rung 5", [r["pooled_spike_native"] for r in recs]))
+rows.append(("pooled", [r["pooled_spike_native"] for r in recs]))
 
-fig, ax = plt.subplots(figsize=(7.2, 4.0))
+fig, ax = plt.subplots(figsize=(6.5, 3.8))
 ax.set_xscale("log")
 ax.set_xlim(0.2, 25)
 ax.axvspan(0.25, 1.0, color="#efeeea", zorder=0, lw=0)
@@ -74,8 +74,8 @@ ax.text(0.905, (n - 1) / 2 + 0.3, "design (a): event per spike, $\\rho_{\\mathrm
 ax.text(4.5, top, "spikes cheaper for any ρ ≤ 1", fontsize=7, color=MUTED, va="bottom", ha="center")
 handles = [plt.Line2D([], [], ls="none", marker=m, ms=6, mfc=c, mec="white", mew=0.8, label=lab)
            for _, lab, c, m in BASELINES]
-ax.legend(handles=handles, loc="lower right", fontsize=7, frameon=False, labelcolor=INK,
-          title="spike reading, rung 5 (one marker per seed)", title_fontsize=7)
+ax.legend(handles=handles, loc="center right", fontsize=7, frameon=False, labelcolor=INK,
+          title="unit spikes (one marker per seed)", title_fontsize=7)
 fig.tight_layout()
 os.makedirs("writeup/figures", exist_ok=True)
 for ext in ("pdf", "png"):
