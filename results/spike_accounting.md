@@ -173,9 +173,62 @@ under any whole-model saving; the hardware note prices it.
   * Counts, not energy: the bands bound the cost ratio a hardware needs, they
     do not say which hardware is built. The hardware note places published
     figures in them.
-  * TinyStories only (tier 3 of DEC-24 would check general text), 32 k tokens
-    per checkpoint, cold windows of 128 tokens.
+  * TinyStories, and WikiText-103 for rung 5 (tier 3, below); 32 k tokens per
+    checkpoint, cold windows of 128 tokens.
   * Weight zeros are skipped by every engine at no cost; an engine that cannot
     skip them multiplies D, Z and S alike by 1.47.
   * The Δ engines are charged nothing for keeping the consumer's previous
     output; they are not worth more even so.
+
+## Tier 3 — general text: WikiText-103 (DEC-24 points 9–10, 2026-10-31)
+
+Runs `wt103_rung1_lr1e-3_s{0,1}` and `wt103_rung5_a4_s{0,1}` (bundle `796ed73`,
+`colab/ladder_general.py`, A100 40 GB, two at a time, 10:10–11:34 UTC): rungs 1
+and 5 with `--dataset wikitext103`, the TinyStories LRs (1e-3 and 3e-3, no new
+sweep), rung 5 distilled from rung 1 seed 0, protocol eval on the first 1 M
+tokens of the last 1 % of the corpus. Corpus: WikiText-103 raw, train split
+(`Salesforce/wikitext`, `wikitext-103-raw-v1`), one EOS per article, 118.7 M
+tokens, packed file sha256 `d121892136e2f363…` (`load_corpus` in
+`training/data.py`).
+
+| run | PPL seed 0 | PPL seed 1 | mean |
+|---|---|---|---|
+| rung 1 (full precision, fine-tuned) | 25.348 | 25.540 | 25.444 |
+| rung 5 (ternary, every projection input 4-bit) | 36.408 | 34.420 | **35.414** |
+
+Rung 1 / rung 5 = **71.8 %** (TinyStories: 92.5 %); the gap is 0.33 nats
+(TinyStories: 0.078). Rung 5's seed spread is 5.6 %. DEC-24 asked only to
+report this ratio: **the 4-bit conversion holds much less well on general text
+at this budget**, and the quality claim is TinyStories-only.
+
+**Counts** (`CORPUS=wikitext103 CUDA_VISIBLE_DEVICES= uv run python
+scripts/spike_accounting.py wt103_rung5_a4_s0 wt103_rung5_a4_s1`, CPU, first
+256 windows of the WikiText-103 eval tail; `runs/accounting/wt103_*.json`,
+`runs/accounting/spike_accounting_wt103.txt`). The spike readings of q and Δq
+are exact on real counts at all 14 checked sites.
+
+| model | site | P(q ≠ 0) | E\|q\| | P(Δq ≠ 0) | ρ* S vs D | ρ* S vs Z | ρ* ΔS vs ΔZ | ΔZ / Z |
+|---|---|---|---|---|---|---|---|---|
+| rung 5, WikiText-103 | `time_mix.lif_out` | 0.167 / 0.173 | 0.275 / 0.288 | 0.206 / 0.213 | 3.695 / 3.537 (cheaper) | 0.603 / 0.600 (depends) | 0.641 / 0.640 (depends) | 1.241 / 1.233 |
+| rung 5, WikiText-103 | `channel_mix.lif_k` | 0.033 / 0.034 | 0.068 / 0.071 | 0.050 / 0.051 | 14.939 / 14.314 (cheaper) | 0.489 / 0.480 (depends) | 0.540 / 0.537 (depends) | 1.511 / 1.495 |
+| rung 5, WikiText-103 | `time_mix.lif_xr` | 0.825 / 0.825 | 2.055 / 2.047 | 0.833 / 0.833 | 0.483 / 0.485 (depends) | 0.399 / 0.401 (depends) | 0.386 / 0.388 (depends) | 1.008 / 1.009 |
+| rung 5, WikiText-103 | `time_mix.lif_xk` | 0.819 / 0.820 | 1.940 / 1.953 | 0.829 / 0.831 | 0.514 / 0.510 (depends) | 0.421 / 0.419 (depends) | 0.384 / 0.384 (depends) | 1.013 / 1.013 |
+| rung 5, WikiText-103 | `time_mix.lif_xv` | 0.865 / 0.864 | 2.566 / 2.539 | 0.876 / 0.877 | 0.393 / 0.397 (depends) | 0.339 / 0.343 (depends) | 0.283 / 0.286 (depends) | 1.016 / 1.018 |
+| rung 5, WikiText-103 | `channel_mix.lif_xk` | 0.855 / 0.853 | 2.377 / 2.338 | 0.851 / 0.849 | 0.421 / 0.428 (depends) | 0.360 / 0.365 (depends) | 0.352 / 0.357 (depends) | 0.995 / 0.996 |
+| rung 5, WikiText-103 | `channel_mix.lif_xr` | 0.860 / 0.859 | 2.421 / 2.403 | 0.852 / 0.850 | 0.413 / 0.415 (depends) | 0.355 / 0.357 (depends) | 0.345 / 0.347 (depends) | 0.990 / 0.990 |
+
+| model | D | Z | S | ΔZ | ΔS | ρ* S vs D | ρ* S vs Z (= 1/R) | ρ* ΔS vs ΔZ | ΔZ / Z | ΔS / Z |
+|---|---|---|---|---|---|---|---|---|---|---|
+| rung 5, WikiText-103 | 62.1 / 62.1 | 33.9 / 33.8 | 90.9 / 90.0 | 34.4 / 34.4 | 96.7 / 95.8 | 0.683 / 0.689 (depends) | 0.372 / 0.376 (depends) | 0.355 / 0.359 (depends) | 1.016 / 1.016 | 2.858 / 2.832 |
+
+**Verdict** (DEC-24 point 10): no site changes band against rung 5 on
+TinyStories, for any of the three comparisons; **the accounting holds on
+general text**. The input sites are slightly less loaded (`E|q|` 1.9–2.6 vs
+2.1–2.7) and `R` is 2.66–2.69 pooled (TinyStories 2.80–2.81); the time-mix
+`lif_xv` site against ΔZ stays in "depends" (0.28–0.29). The SNN papers'
+formula gives 3.49–3.52 × on the projections (TinyStories 3.32–3.33 ×), with
+the same factors: 5.11 × 1.83 × 0.37–0.38.
+
+Checkpoints (`checkpoints/ladder/<run>/final.pt`, sha256 first 16 hex):
+`wt103_rung1_lr1e-3_s0` `5b4b81ac3cfe75c9`, `_s1` `23ab12a3fdcb2053`;
+`wt103_rung5_a4_s0` `41383448bdd080e8`, `_s1` `689fbc0783a8f5cd`.

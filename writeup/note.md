@@ -1,8 +1,7 @@
 <!--
 Draft of the arXiv note (DECISIONS #24; plan in writeup/plan.md). Markdown with
 LaTeX math, to convert once a TeX toolchain is chosen. Every number is in
-results/ with its command and commit. [TIER 3] marks what waits for the
-general-text runs.
+results/ with its command and commit.
 Revision 2 (2026-10-31) applies an internal review: scope of R, the
 pre-registration sentence, the encodings of the cited spiking LMs, structure.
 -->
@@ -26,8 +25,9 @@ times a spike-count penalty (0.36). Counted directly, spikes need 1.7–3.4 time
 the accumulations of a zero-skipping integer engine at every site, beat a
 dense engine only at the two sparse sites, and gain nothing from delta coding.
 Digital adders, weight fetches and neuromorphic chips all price a spike
-accumulation at 0.82 or more of an integer one, where spikes lose. A membrane
-carried across tokens did not help. [TIER 3: one clause on WikiText-103.]
+accumulation at 0.82 or more of an integer one, where spikes lose. Retrained
+on WikiText-103 the model is further from full precision (1.39 ×), but every
+site keeps its verdict. A membrane carried across tokens did not help.
 
 ## 1. Introduction
 
@@ -115,7 +115,11 @@ pre-registered with its threshold:
 
 Rung 5 is the model studied below: every input of every ternary projection is
 a 4-bit count. At twice the training budget, rung 1 / rung 5 moves from
-92.5 % to 94.3 %. [TIER 3: WikiText-103 rows.]
+92.5 % to 94.3 %. On a general corpus the conversion holds much less well:
+retrained on WikiText-103 [Merity et al. 2016] with the same recipe and
+learning rates, rung 1 reaches 25.44 and rung 5 35.41, i.e. 1.39 × (71.8 %).
+The counts below do not depend on this gap (Section 4), but the quality figure
+of 1.08 × is specific to TinyStories.
 
 ## 3. An exact spike reading
 
@@ -199,7 +203,9 @@ Figure 1 shows the same numbers on a log scale.
 
 The counts on rung 3 (whose only spike-native sites are the two sparse ones)
 give a pooled $\rho^*$ of 8.8–8.9 against D and 0.53 against Z; on rung 5 at
-twice the budget, 0.62 and 0.34. [TIER 3: WikiText-103 counts.]
+twice the budget, 0.62 and 0.34. Rung 5 retrained and counted on WikiText-103
+keeps every site in the same band for all three comparisons: pooled 0.68–0.69
+against D, 0.37–0.38 against Z ($R$ = 2.66–2.69), 0.36 for ΔS against ΔZ.
 
 The quantizers were not trained for sparsity; a firing-rate penalty would
 lower $E|q|$ at some cost in perplexity (not tested here). It would move Z as
@@ -323,8 +329,10 @@ as the values.
 
 ## 9. Limits
 
-  * One model (RWKV-4-169M) at one size; one training corpus (TinyStories)
-    [TIER 3: plus WikiText-103]; counts on 32 k tokens.
+  * One model (RWKV-4-169M) at one size, two corpora; counts on 32 k tokens
+    per checkpoint. The conversion's quality depends on the corpus (1.08 × on
+    TinyStories, 1.39 × on WikiText-103 at the same budget); the accounting
+    does not.
   * The reading covers integer counts sent as rate-coded spikes through
     stateless consumers, the encoding of the spiking LMs above. A network
     whose neurons integrate spikes over time steps computes a function of
@@ -407,6 +415,9 @@ knowledge distillation. arXiv:2308.15122, 2023.
 
 Ma, S. et al. The era of 1-bit LLMs: All large language models are in 1.58
 bits. arXiv:2402.17764, 2024.
+
+Merity, S., Xiong, C., Bradbury, J., Socher, R. Pointer sentinel mixture
+models. arXiv:1609.07843, 2016.
 
 Merolla, P. A. et al. A million spiking-neuron integrated circuit with a
 scalable communication network and interface. Science 345(6197), 2014.

@@ -38,7 +38,7 @@ leak fixed or learned, did not improve the model.
 
 | # | claim | evidence | status |
 |---|---|---|---|
-| C1 | The ternary 4-bit conversion holds: rung 5, PPL 5.391, 1.081 × rung 1 (92.5 %) | `results/stage_a_ladder.md`, DEC-22 | measured, 2 seeds |
+| C1 | The ternary 4-bit conversion holds on TinyStories: rung 5, PPL 5.391, 1.081 × rung 1 (92.5 %); on WikiText-103 only 1.39 × (71.8 %) | `results/stage_a_ladder.md`, DEC-22; `results/spike_accounting.md` tier 3 | measured, 2 seeds; TinyStories-only as a quality claim |
 | C2 | The spike reading is exact for every BitLinear consumer | unit tests and real-count checks, rung 4a and tier 1 | measured |
 | C3 | Against a zero-skipping integer engine, `R = S/Z ≥ 1` by construction; measured 1.7–3.4 per site, 1.9 (rung 3) and 2.8 (rung 5) pooled | `results/spike_accounting.md` | measured, 3 models × 2 seeds |
 | C4 | Against a dense integer engine, spikes win only where activations are sparse: `ρ*` ≈ 3.3 and 15 at the two sparse sites, 0.33–0.47 at the input sites, 0.65 pooled at rung 5 | same | measured |
@@ -184,7 +184,8 @@ Eleven days is tight but the measurements exist; tier 3 finishes today.
 ## 10. Decisions for Gaétan
 
   1. ~~Format~~: arXiv note, chosen 2026-10-31.
-  2. ~~Tier 3~~: approved 2026-10-31, running.
+  2. ~~Tier 3~~: approved and run 2026-10-31: every site keeps its verdict on
+     WikiText-103; rung 5 reaches 71.8 % of rung 1 there.
   3. ~~Venue~~: arXiv first, chosen 2026-10-31 (not NICE 2027); an ICLR 2027
      workshop to consider once the list is out (29 Nov 2026).
   4. Whether the repository becomes public, and when (expected for any venue).

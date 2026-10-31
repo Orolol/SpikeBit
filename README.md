@@ -63,7 +63,8 @@ integer engine that skips zero activations, spikes need 1.7–3.4 × the
 accumulations at every site, and every sourced hardware figure prices a spike
 accumulation too high for them to win; against one that does not skip zeros
 they win only at the two sparse sites. Coding the change between tokens saves
-nothing.
+nothing. Retrained and counted on WikiText-103, every site keeps its verdict,
+but rung 5 reaches only 71.8 % of rung 1 there (35.41 vs 25.44).
 
 **Done.** Phases 0–4: neurons (FAI-LIF with MinMax or LSQ grids, binary LIF,
 surrogates), ternary STE + `BitLinear`, spiking RWKV-4 blocks, teacher

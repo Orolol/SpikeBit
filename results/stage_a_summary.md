@@ -124,7 +124,9 @@ Colab A100; the same checkpoints evaluate 0.1 % apart on the two (rung 2).
 ## Limits
 
   * One model (RWKV-4-169M), one dataset (TinyStories, simple text), 20 M
-    tokens; two seeds per rung, seed spreads 0.8–2.5 %.
+    tokens; two seeds per rung, seed spreads 0.8–2.5 %. On WikiText-103
+    (DEC-24 tier 3, 2026-10-31) rung 5 reaches only 71.8 % of rung 1 (35.41 vs
+    25.44): the quality result does not carry to general text at this budget.
   * The primary metric is cold (fresh state per 128-token window). The warm
     (streaming) eval is secondary, and was not measured for rung 1 at 1×.
   * The denominator is the FP *fine-tuned* student (DEC-15), not DEC-1's

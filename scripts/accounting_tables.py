@@ -2,11 +2,13 @@
 
     uv run python scripts/accounting_tables.py
 
-Values are given as seed 0 / seed 1 for each model (rung 3, rung 5, rung 5 x2).
+Values are given as seed 0 / seed 1 for each model (rung 3, rung 5, rung 5 x2, and
+rung 5 trained and counted on WikiText-103, DEC-24 tier 3).
 """
 import json
 
-MODELS = {"rung 3": "rung3l_a4", "rung 5": "rung5_a4", "rung 5 ×2": "rung5x2_a4"}
+MODELS = {"rung 3": "rung3l_a4", "rung 5": "rung5_a4", "rung 5 ×2": "rung5x2_a4",
+          "rung 5, WikiText-103": "wt103_rung5_a4"}
 BAND = {"spikes cheaper": "cheaper", "spikes dearer": "dearer", "depends on hardware": "depends"}
 runs = {m: [json.load(open(f"runs/accounting/{p}_s{s}.json")) for s in (0, 1)] for m, p in MODELS.items()}
 
