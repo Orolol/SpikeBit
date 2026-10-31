@@ -14,8 +14,9 @@ baseline, so it costs less only where a 1-bit accumulation costs under
 matmul work. A membrane carried across tokens brought no gain at this scale.
 No energy claim without a hardware cost model.
 
-Reference: Yao et al., *Neuromorphic spike-based large language model*,
-NSR, Dec 2025 (4-bit weights). SpikeBit pushes the weights to ternary.
+Reference: Xu et al., *Neuromorphic spike-based large language model*,
+NSR, Dec 2025 (4-bit weights; DECISIONS #1 cites it as Yao et al., the 13th
+of 20 authors). SpikeBit pushes the weights to ternary.
 
 Two-stage validation plan (DECISIONS #1):
 

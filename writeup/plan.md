@@ -55,8 +55,9 @@ on both sides, which most SNN-vs-ANN comparisons do not have).
 
 ## 4. Outline
 
-  1. **Introduction** (1 p). Claims made for spiking LLMs (SpikeGPT's 32 ×,
-     NSLLM's FPGA figures); why they are hard to check (different networks,
+  1. **Introduction** (1 p). Claims made for spiking LLMs (section 8: six
+     papers price spikes at 0.9 pJ against a 4.6 pJ MAC; SDLLM charges an INT4
+     baseline that FP32 MAC price; NSLLM's 19.8 × is a power ratio); why they are hard to check (different networks,
      FP32 baselines); what an exact reading allows; the contributions C2–C8.
   2. **Setup** (1 p). RWKV-4-169M, ternary BitLinears, stateless 4-bit LSQ
      LIFs, the conversion ladder in one table (rungs 0–5, 4b, 4c), protocol and
@@ -122,22 +123,68 @@ look them up before choosing.
   * Counts, not a cost model of a built engine; the hardware figures come from
     different nodes and operating points.
 
-## 8. Checks before any draft
+## 8. Related work, verified (2026-10-31)
 
-  * NSLLM authorship: DEC-1 and the README say Yao et al.; the PubMed Central
-    list read for the note starts with Han Xu and Xuerui Qiu.
-  * SpikeGPT's headline factor: 32.2 × in its Table 1, 33.2 × in its text.
-  * Spikformer: wording read in arXiv v2, not the ICLR camera-ready.
-  * Dampfhoffer et al.: read in part only.
-  * Related work not yet read, to find and verify: other spiking LMs
-    (SpikeLM, SpikeLLM, SpikeBERT, SpikingBERT), BitNet b1.58 and a4.8,
-    delta and sigma-delta networks, zero-skipping accelerators (e.g.
-    Cnvlutin), ANN-vs-SNN comparisons on digital hardware.
+Source notes, with the version read and the location of every figure:
+`runs/writeup_sources/related_spiking_lms.md` and `related_background.md`
+(git-ignored, with the downloaded PDFs). Paraphrased here; figures marked
+"our arithmetic" are computed from the papers' printed tables.
 
-## 9. Decisions for Gaétan
+**Energy claims of spiking LMs.** All but one price a spike accumulation at
+0.9 pJ and a MAC at 4.6 pJ (SpikeGPT: 4.5), the FP32 pair of Horowitz.
 
-  1. Format: blog post, arXiv note, or full paper (section 6).
-  2. Tier 3 (general text, ≈ 2.5 h of A100 and a 0.2–0.3 GB download): needed
-     for a paper, optional for a blog post.
-  3. Whether the repository becomes public, and when.
-  4. Language of a blog post (EN or FR).
+| paper | headline | baseline and how it is priced | what the decomposition says |
+|---|---|---|---|
+| SpikeGPT (Zhu et al., TMLR 2024) | 32.2 × (abstract, Table 1); 33.2 × in the introduction only | analytical GPT at 4.5 pJ per MAC | constants give 5 ×; the rest is a firing rate of 0.15 |
+| SpikeLM (Xing et al., ICML 2024) | 12.9 × vs BERT-base (T = 1) | analytical BERT at 4.6 pJ | ternary spikes; same pricing |
+| SpikeBERT (Lv et al., 2023 preprint) | 27.82 % of BERT's energy | analytical BERT at 4.6 pJ | its own table has more operations than BERT (our reading of its Table 2): the saving is the constants |
+| SpikingBERT (Bal & Sengupta, AAAI 2024) | "nearly twice" | same network as an ANN, 4.6 pJ | same pricing |
+| SpikingMamba (Huang et al., TMLR 2026) | 4.76 × vs Mamba2 | analytical, FP32 constants | multi-level signed spikes, i.e. integer counts |
+| SDLLM (Xu et al., arXiv 2604.16475, 2026) | 6 × vs INT4 (QuaRot), "up to 13 ×" | INT4 model charged 4.6 pJ per integer op (our arithmetic from its Table 2) | op ratio 1.15 ×, energy ratio 6 ×: the 5.1 × of the constants applied to an integer baseline; with INT6 it has 2.3 × more ops and still reports 2.2 × less energy |
+| NSLLM (Xu et al., NSR 2025) | 19.8 × energy efficiency, FPGA vs A800 | measured powers | 19.8 is the ratio of dynamic powers (our arithmetic), not energy per token; the deployed model is listed with T = 255 binary steps and more FLOPs than FP32 RWKV-4 (its Table S10) |
+| SpikeLLM (Xing et al., ICLR 2025) | 10.79 × fewer bit-operations vs LLaMA-7B | bit-operation counts, no pJ | notes that 1-bit event-driven execution costs more operations than GEMM |
+
+SDLLM is the closest work and the clearest case for the note: its claim
+against an integer baseline is mostly the FP32 constants. It is a preprint;
+cite the version read.
+
+**Background, verified.** BitNet b1.58 (arXiv 2402.17764: matmuls of integer
+additions; 71.4 × less arithmetic energy than FP16 LLaMA at 7 nm) and a4.8
+(arXiv 2411.04965: INT4 inputs to QKV and FFN up/gate, INT8 sparsified
+elsewhere; full INT4 diverged). Delta networks (Neil et al., ICML 2017) and
+sigma-delta networks (O'Connor & Welling, arXiv 1611.02024): the change-based
+coding our ΔZ/ΔS engines test. Zero-skipping accelerators: Cnvlutin (ISCA
+2016, zero activations), EIE (ISCA 2016) and SCNN (ISCA 2017, zero weights and
+activations): the Z engine exists in silicon. Davidson & Furber (Front.
+Neurosci. 2021): an SNN wins only below about 1.72 spikes per output.
+Dampfhoffer et al. (IEEE TETCI 2022): compares against 16-bit and 8-bit
+fixed-point accelerators, no 4-bit, ternary or zero-skipping baselines; the
+SNN advantage it finds comes from spike sparsity, not from replacing MACs with
+accumulates. Neither compares the same network under both readings.
+
+**Still to check.** Spikformer camera-ready wording (arXiv v2 read); the
+OpenReview versions of SpikeGPT and SpikingMamba (behind a challenge); the
+venues of SpikeBERT and SDLLM; BrainTransformers (arXiv 2410.14687, not read);
+DOIs of Cnvlutin, EIE, SCNN.
+
+## 9. Venues (official pages read 2026-10-31)
+
+| venue | format | deadline |
+|---|---|---|
+| NICE 2027 (Brighton, 6–8 April 2027) | regular paper, 4–8 pages excluding references | **11 Nov 2026 AoE**; late-breaking 1–2 page abstracts 1 Feb 2027 |
+| ICLR 2027 workshops | per workshop | list due 29 Nov 2026; suggested paper deadline 1 Feb 2027 |
+| ICBINB | – | no 2027 edition announced |
+| ICONS 2027 | – | no call published |
+| TMLR | any length | rolling |
+| arXiv alone | – | none |
+
+NICE is the neuromorphic audience the note addresses, and its page limit fits.
+Eleven days is tight but the measurements exist; tier 3 finishes today.
+
+## 10. Decisions for Gaétan
+
+  1. ~~Format~~: arXiv note, chosen 2026-10-31.
+  2. ~~Tier 3~~: approved 2026-10-31, running.
+  3. Venue: NICE 2027 (11 Nov), an ICLR 2027 workshop (Feb 2027), or arXiv
+     only first.
+  4. Whether the repository becomes public, and when (expected for any venue).

@@ -149,9 +149,8 @@ of this project.
     spikes' cost is Intel's qualitative statement.
   * Horowitz has no 4- or 16-bit integer add; `a` is bracketed by the 8- and
     32-bit rows. All Horowitz figures are 45 nm.
-  * DEC-1 and the README cite NSLLM as Yao et al.; the author list read for
-    this note (PubMed Central) starts with Han Xu and Xuerui Qiu. To check
-    before any write-up.
+  * DEC-1 cites NSLLM as Yao et al.; PubMed Central and Crossref list 20
+    authors, first Han Xu, Man Yao 13th. Cited here as Xu et al.
   * The chip figures are per synaptic event at specific operating points and
     include different overheads (TrueNorth: total energy; SpiNNaker 2: dynamic
     power with a counting convention that flatters it; Loihi: a minimum from
