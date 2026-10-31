@@ -49,7 +49,7 @@ covers random counts including the largest swing.
   * **Against an integer engine that skips zero activations (Z), the spike
     reading never needs fewer accumulations.** `ρ* = 1/R` lies between 0.29
     and 0.58 at every site, in every model, on both seeds: spikes win only if
-    a spike accumulation costs under a third to a half of a 4-bit one. Every
+    a spike accumulation costs between 0.29 and 0.58 of a 4-bit one. Every
     site falls in the "depends on hardware" band, as `R ≥ 1` dictates.
   * **Against an engine that does not skip zeros (D), the verdict splits by
     site.** At the two sparse sites (time-mix `lif_out`, 17–18 % non-zero;
