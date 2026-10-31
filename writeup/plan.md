@@ -185,6 +185,6 @@ Eleven days is tight but the measurements exist; tier 3 finishes today.
 
   1. ~~Format~~: arXiv note, chosen 2026-10-31.
   2. ~~Tier 3~~: approved 2026-10-31, running.
-  3. Venue: NICE 2027 (11 Nov), an ICLR 2027 workshop (Feb 2027), or arXiv
-     only first.
+  3. ~~Venue~~: arXiv first, chosen 2026-10-31 (not NICE 2027); an ICLR 2027
+     workshop to consider once the list is out (29 Nov 2026).
   4. Whether the repository becomes public, and when (expected for any venue).

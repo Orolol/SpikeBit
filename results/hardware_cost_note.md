@@ -44,6 +44,13 @@ fetch, the effective ratio is `ρ_eff = (ρ a + f) / (a + f)`:
 
 A larger memory raises `f` and pushes `ρ_eff` closer to 1.
 
+Davidson and Furber (Frontiers in Neuroscience 15:651141, 2021) build the same
+argument from SpiNNaker 2 post-layout figures (22 nm): with `E` the energy of
+an addition, a weight read costs about `5E`, a spike event `7E` (weight read,
+membrane read and write, addition) and a multiply-accumulate event `12E`. With
+ternary weights there is no multiplication, so an integer event that skips
+zeros costs the same `7E` as a spike event: `ρ ≈ 1`.
+
 ## 3. Event-driven chips charge per event, not per bit
 
 Published energies per synaptic event:
@@ -76,6 +83,7 @@ about the same cost per event: `ρ ≈ 1`, and S costs `R` times Z (1.9 at rung 
 | adds priced by width (Horowitz) | 1 | dearer | cheaper | dearer |
 | adds plus weight fetch from 8 KB SRAM | 0.82–0.93 (operand-width adds), 1 (width-priced adds) | dearer | cheaper | dearer |
 | event-driven chips, Loihi 2 graded spikes | ≈ 1 | dearer | cheaper | dearer |
+| per-event model of Davidson & Furber (SpiNNaker 2, 22 nm) | ≈ 1 | dearer | cheaper | dearer |
 
 The bands of DEC-24 stay as measured ("depends on hardware" against Z at every
 site). Every hardware point this note could source sits at `ρ ≥ 0.82`, above
@@ -184,3 +192,6 @@ of this project.
     doi:10.1109/TETCI.2022.3214509 (abstract, Table I and parts read).
   * E. Lemaire et al., "An analytical estimation of spiking neural networks
     energy efficiency", arXiv:2210.13107, 2022.
+  * S. Davidson, S. B. Furber, "Comparison of artificial and spiking neural
+    networks on digital hardware", Frontiers in Neuroscience 15:651141, 2021,
+    doi:10.3389/fnins.2021.651141.
